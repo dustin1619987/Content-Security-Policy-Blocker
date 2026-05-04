@@ -1,41 +1,40 @@
 # Disable Content-Security-Policy
 
-A Manifest V3 Chrome extension that strips `Content-Security-Policy` (and related)
-response headers, allowing pages that would normally be blocked by CSP to load
-inline scripts, styles, and cross-origin resources.
+A Manifest V3 Chrome extension that disables the
+`Content-Security-Policy` response header on a **per-tab** basis.
 
-Modeled after the popular
+Click the toolbar icon to disable CSP for the current tab and reload it.
+Click again to re-enable CSP and reload. Other tabs are unaffected.
+
+Modeled after the
 ["Disable Content-Security-Policy"](https://chromewebstore.google.com/detail/disable-content-security/ieelmcmcagommplceebfedjlakkhpden)
-extension: a single toolbar button toggles the behavior on and off, and the
-state is persisted across browser sessions.
+extension on the Chrome Web Store.
 
 ## What it removes
 
-When toggled ON, the extension removes the following response headers from every
-HTTP(S) response:
+When CSP is disabled for a tab, the following response headers are stripped
+from every request made by that tab:
 
 - `Content-Security-Policy`
 - `Content-Security-Policy-Report-Only`
 - `X-WebKit-CSP`
 - `X-Content-Security-Policy`
-- `X-Frame-Options`
-- `Cross-Origin-Embedder-Policy`
-- `Cross-Origin-Opener-Policy`
-- `Cross-Origin-Resource-Policy`
 
-When toggled OFF, no rules are active and Chrome behaves normally.
+`X-Frame-Options` and the COOP / COEP / CORP isolation headers are **not**
+touched, matching the upstream extension's narrower scope.
 
 ## How it works
 
-- Uses the `declarativeNetRequest` API with a static ruleset
-  (`rules.json`) that strips the headers listed above.
-- The ruleset ships **disabled**. The background service worker
-  (`background.js`) enables / disables it in response to clicks on the
-  toolbar action.
-- State is persisted in `chrome.storage.local` and restored on browser
-  startup and on extension install / update.
-- The toolbar icon switches between a gray shield (off) and a red shield
-  with `OFF` badge (on) so the current state is always visible.
+- Uses the `declarativeNetRequest` **session rules** API. When you click the
+  toolbar action, the background service worker installs a `modifyHeaders`
+  rule scoped to that tab via `condition.tabIds`, then reloads the tab.
+- Clicking again removes the rule and reloads the tab so the original CSP
+  takes effect.
+- The toolbar icon and a small `OFF` badge show per-tab state, so you can
+  always see at a glance which tabs have CSP disabled.
+- Per-tab rules and state are cleared automatically when a tab is closed,
+  the extension is reloaded, or the browser restarts (session rules do not
+  persist across browser restarts).
 
 ## Install (developer mode)
 
@@ -44,21 +43,20 @@ When toggled OFF, no rules are active and Chrome behaves normally.
 3. Click **Load unpacked** and select this directory.
 4. Pin the extension from the puzzle-piece menu so the toolbar icon is
    visible.
-5. Click the icon to toggle CSP stripping on / off. The icon color and badge
-   reflect the current state.
+5. Open a page, click the icon, and the tab will reload with CSP stripped.
+   Click again to restore CSP.
 
 ## Files
 
 | File | Purpose |
 | --- | --- |
-| `manifest.json` | MV3 manifest, declares the static DNR ruleset (initially disabled). |
-| `rules.json` | Static `declarativeNetRequest` ruleset that strips CSP / framing headers. |
-| `background.js` | Service worker: handles toolbar clicks, persists state, updates icon. |
+| `manifest.json` | MV3 manifest. `<all_urls>` host access; `declarativeNetRequest` permission. |
+| `background.js` | Service worker. Toggles per-tab session rules, updates icon/badge, cleans up on tab close. |
 | `icons/` | Toolbar icons in on / off states at 16, 32, 48, 128 px. |
 | `scripts/make_icons.py` | Regenerates the PNG icons from code (requires Pillow). |
 
 ## Security note
 
-Disabling CSP removes a real defense-in-depth protection that sites use to
-mitigate XSS and clickjacking. Use only on sites you trust or for development
-and testing, and toggle it back off when you are done.
+CSP is a real defense-in-depth protection against XSS and clickjacking.
+Disable it only on tabs you trust, for development or testing, and re-enable
+it (or just close the tab) when you're done.
