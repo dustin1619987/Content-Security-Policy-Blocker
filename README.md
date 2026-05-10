@@ -6,10 +6,6 @@ A Manifest V3 Chrome extension that disables the
 Click the toolbar icon to disable CSP for the current tab and reload it.
 Click again to re-enable CSP and reload. Other tabs are unaffected.
 
-Modeled after the
-["Disable Content-Security-Policy"](https://chromewebstore.google.com/detail/disable-content-security/ieelmcmcagommplceebfedjlakkhpden)
-extension on the Chrome Web Store.
-
 ## What it removes
 
 When CSP is disabled for a tab, the following response headers are stripped
