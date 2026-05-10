@@ -91,28 +91,28 @@ function makeRule(tabId) {
 }
 
 async function paintTab(tabId, on) {
-  try {
-    await chrome.action.setIcon({
-      tabId,
-      path: on ? ICONS.on : ICONS.off
-    });
-    await chrome.action.setTitle({
+  // Run the four chrome.action calls in parallel. Each one is a separate
+  // IPC and awaiting them sequentially widens the window during which
+  // the default icon/badge is visible during navigation.
+  const ops = [
+    chrome.action.setIcon({ tabId, path: on ? ICONS.on : ICONS.off }),
+    chrome.action.setTitle({
       tabId,
       title: on
         ? "CSP DISABLER: ON — click to turn off (CSP will work normally)"
         : "CSP DISABLER: OFF — click to turn on (CSP will be stripped)"
-    });
-    await chrome.action.setBadgeText({
-      tabId,
-      text: on ? "ON" : "OFF"
-    });
-    await chrome.action.setBadgeBackgroundColor({
+    }),
+    chrome.action.setBadgeText({ tabId, text: on ? "ON" : "OFF" }),
+    chrome.action.setBadgeBackgroundColor({
       tabId,
       color: on ? COLOR_ON : COLOR_OFF
-    });
-    if (chrome.action.setBadgeTextColor) {
-      await chrome.action.setBadgeTextColor({ tabId, color: "#ffffff" });
-    }
+    })
+  ];
+  if (chrome.action.setBadgeTextColor) {
+    ops.push(chrome.action.setBadgeTextColor({ tabId, color: "#ffffff" }));
+  }
+  try {
+    await Promise.all(ops);
   } catch (e) {
     // Tab may have closed mid-update; ignore.
   }
@@ -167,6 +167,20 @@ chrome.tabs.onUpdated.addListener((tabId) => {
 
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   paintCurrentState(tabId);
+});
+
+// webNavigation fires earlier than tabs.onUpdated, which lets us
+// re-assert the per-tab icon/badge before Chrome paints the action's
+// default during the navigation transition. This is what kills the
+// brief flash you'd otherwise see when refreshing an ON tab.
+chrome.webNavigation.onBeforeNavigate.addListener((details) => {
+  if (details.frameId !== 0) return; // top frame only
+  paintCurrentState(details.tabId);
+});
+
+chrome.webNavigation.onCommitted.addListener((details) => {
+  if (details.frameId !== 0) return;
+  paintCurrentState(details.tabId);
 });
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
@@ -231,3 +245,23 @@ chrome.runtime.onStartup.addListener(resetAll);
 // First-boot defaults (covers the case where the worker started for some
 // other reason and neither onInstalled nor onStartup fires).
 setGlobalDefaults();
+
+// On every service-worker boot, repaint the currently-focused tabs as
+// soon as we can. If the worker was woken up by a refresh, this races
+// the navigation paint: the sooner our per-tab override re-asserts,
+// the less of the default-icon flash the user can see.
+(async () => {
+  await rehydrated;
+  try {
+    const tabs = await chrome.tabs.query({ active: true });
+    await Promise.all(
+      tabs.map((t) =>
+        typeof t.id === "number"
+          ? paintTab(t.id, activeTabs.has(t.id))
+          : Promise.resolve()
+      )
+    );
+  } catch (e) {
+    // Best effort.
+  }
+})();
