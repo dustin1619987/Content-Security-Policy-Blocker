@@ -12,9 +12,21 @@
       <span class="brand-dot"></span>
       <span class="brand-name">CSP Disabler</span>
     </div>
-    <div class="status-pill" id="status-pill">
-      <span class="status-dot"></span>
-      <span id="status-label">OFF</span>
+    <div class="header-right">
+      <div class="status-pill" id="status-pill">
+        <span class="status-dot"></span>
+        <span id="status-label">OFF</span>
+      </div>
+      <button
+        id="theme-btn"
+        class="icon-btn"
+        type="button"
+        title="Toggle dark mode"
+        aria-label="Toggle dark mode"
+      >
+        <span class="theme-icon theme-icon-light" aria-hidden="true">☀</span>
+        <span class="theme-icon theme-icon-dark" aria-hidden="true">☾</span>
+      </button>
     </div>
   </header>
 
@@ -22,55 +34,146 @@
     <button class="tab is-active" role="tab" data-tab="config" aria-selected="true">
       Configuration
     </button>
+    <button class="tab" role="tab" data-tab="custom" aria-selected="false">
+      Custom CSP
+    </button>
     <button class="tab" role="tab" data-tab="about" aria-selected="false">
       About
     </button>
   </nav>
 
   <main>
+    <!-- ==================== Configuration ==================== -->
     <section
       id="panel-config"
       class="panel is-active"
       role="tabpanel"
-      aria-labelledby="tab-config"
     >
       <div class="row">
         <div class="row-text">
-          <div class="row-title">CSP for this tab</div>
+          <div class="row-title">Strip CSP from this tab</div>
           <div class="row-sub" id="state-sub">
             CSP headers are working normally.
           </div>
         </div>
-        <button id="toggle-btn" class="toggle">
+        <button id="strip-btn" class="toggle" type="button">
           <span class="toggle-track">
             <span class="toggle-thumb"></span>
           </span>
-          <span class="toggle-label" id="toggle-label">Turn ON</span>
+          <span class="toggle-label" id="strip-label">Turn ON</span>
         </button>
       </div>
 
       <div class="csp-block">
         <div class="csp-block-head">
-          <span class="csp-block-title">Captured Content-Security-Policy</span>
-          <button id="copy-btn" class="copy-btn" type="button" disabled>
-            Copy
-          </button>
+          <span class="csp-block-title">Captured CSP — response headers</span>
+          <div class="btn-group">
+            <button id="copy-btn" class="copy-btn" type="button" disabled>
+              Copy
+            </button>
+            <button id="copy-curl-btn" class="copy-btn" type="button" disabled>
+              Copy as curl
+            </button>
+          </div>
         </div>
         <div class="csp-meta">
           <span id="csp-url" class="csp-url" title="">—</span>
         </div>
-        <pre id="csp-pre" class="csp-pre">No CSP captured for this tab yet.
+        <pre id="csp-pre" class="csp-pre is-empty">No CSP captured for this tab yet.
 
 Reload the page (or visit a CSP-protected site) to capture
 the headers the server sent.</pre>
       </div>
+
+      <div class="csp-block csp-block-meta">
+        <div class="csp-block-head">
+          <span class="csp-block-title">Captured CSP — &lt;meta&gt; tags</span>
+          <button id="copy-meta-btn" class="copy-btn" type="button" disabled>
+            Copy
+          </button>
+        </div>
+        <pre id="meta-pre" class="csp-pre is-empty">No &lt;meta http-equiv="Content-Security-Policy"&gt; tags found in this page.</pre>
+      </div>
     </section>
 
+    <!-- ==================== Custom CSP ==================== -->
+    <section
+      id="panel-custom"
+      class="panel"
+      role="tabpanel"
+      hidden
+    >
+      <div class="row">
+        <div class="row-text">
+          <div class="row-title">Inject a custom CSP</div>
+          <div class="row-sub">
+            Replace what the server sends with your own policy for testing.
+          </div>
+        </div>
+        <button id="inject-btn" class="toggle" type="button">
+          <span class="toggle-track">
+            <span class="toggle-thumb"></span>
+          </span>
+          <span class="toggle-label" id="inject-label">Turn ON</span>
+        </button>
+      </div>
+
+      <label class="field-label" for="inject-textarea">CSP value</label>
+      <textarea
+        id="inject-textarea"
+        class="csp-textarea"
+        spellcheck="false"
+        placeholder="default-src 'self'; script-src 'self' https://cdn.example.com; img-src 'self' data:;"
+      ></textarea>
+
+      <div class="field-label inline-label">Inject as</div>
+      <div class="radio-group" role="radiogroup" aria-label="Injection method">
+        <label class="radio">
+          <input type="radio" name="inject-mode" value="header" checked />
+          <span class="radio-mark"></span>
+          <span class="radio-text">
+            Response header
+            <span class="radio-sub">Replaces the server's CSP for this tab.</span>
+          </span>
+        </label>
+        <label class="radio">
+          <input type="radio" name="inject-mode" value="meta" />
+          <span class="radio-mark"></span>
+          <span class="radio-text">
+            &lt;meta&gt; tag
+            <span class="radio-sub">Adds a meta tag at document_start. Intersects with the server's CSP.</span>
+          </span>
+        </label>
+        <label class="radio">
+          <input type="radio" name="inject-mode" value="both" />
+          <span class="radio-mark"></span>
+          <span class="radio-text">
+            Both
+            <span class="radio-sub">Replace as header and add as meta tag.</span>
+          </span>
+        </label>
+      </div>
+
+      <div class="form-actions">
+        <button id="apply-btn" class="primary-btn" type="button">
+          Apply &amp; reload
+        </button>
+        <button id="reset-btn" class="secondary-btn" type="button">
+          Reset
+        </button>
+      </div>
+
+      <div class="hint">
+        Tip: enable <strong>Strip CSP</strong> on the Configuration tab too
+        if you want a clean slate before injecting via &lt;meta&gt;.
+      </div>
+    </section>
+
+    <!-- ==================== About ==================== -->
     <section
       id="panel-about"
       class="panel"
       role="tabpanel"
-      aria-labelledby="tab-about"
       hidden
     >
       <div class="about-card">

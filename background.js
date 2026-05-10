@@ -1,6 +1,6 @@
 // Visual states:
-//   ON  = extension is actively stripping CSP for the tab → green icon, "ON"  badge
-//   OFF = CSP is working normally for the tab            → red   icon, "OFF" badge
+//   ON  = extension is actively stripping or injecting CSP for the tab
+//   OFF = the tab is untouched
 
 const ICONS = {
   on: {
@@ -17,7 +17,7 @@ const ICONS = {
   }
 };
 
-const COLOR_ON = "#27ae60";  // green
+const COLOR_ON = "#27ae60"; // green
 const COLOR_OFF = "#c0392b"; // red
 
 const CSP_HEADERS = [
@@ -44,62 +44,158 @@ const RESOURCE_TYPES = [
   "other"
 ];
 
-// Tabs where the extension is currently ON (CSP being stripped).
-const activeTabs = new Set();
+// ---------------------------------------------------------------------------
+// Per-tab state
+//
+// tabState : Map<tabId, { strip, inject: { enabled, value, mode } }>
+//   strip            — boolean, the Configuration ON/OFF toggle
+//   inject.enabled   — boolean, the Custom CSP toggle
+//   inject.value     — string, the CSP the user typed
+//   inject.mode      — "header" | "meta" | "both"
+//
+// A tab is considered "ON" (green icon) when either strip is on or
+// inject is on. Both pieces of state live in chrome.storage.session
+// so they survive service-worker restarts within the browser session.
 
-// MV3 service workers are killed when idle. Session rules persist across
-// those restarts, but our in-memory Set does not — so on every worker
-// boot we rebuild the Set from the surviving rules. Every event handler
-// awaits this promise before reading activeTabs, otherwise we'd race
-// against rehydration and report a stale OFF state.
-const rehydrated = (async () => {
-  try {
-    const rules = await chrome.declarativeNetRequest.getSessionRules();
-    for (const rule of rules) {
-      const ids = rule.condition && rule.condition.tabIds;
-      if (Array.isArray(ids)) {
-        for (const id of ids) activeTabs.add(id);
-      }
-    }
-  } catch (e) {
-    // First boot or API unavailable — nothing to rehydrate.
-  }
-})();
+const tabState = new Map();
 
-function ruleIdFor(tabId) {
-  // Session rule IDs must be positive 32-bit integers; tab IDs are
-  // positive, but bump by one to keep the namespace clean.
-  return tabId + 1;
-}
-
-function makeRule(tabId) {
+function defaultState() {
   return {
-    id: ruleIdFor(tabId),
-    priority: 1,
-    action: {
-      type: "modifyHeaders",
-      responseHeaders: CSP_HEADERS.map((header) => ({
-        header,
-        operation: "remove"
-      }))
-    },
-    condition: {
-      tabIds: [tabId],
-      resourceTypes: RESOURCE_TYPES
-    }
+    strip: false,
+    inject: { enabled: false, value: "", mode: "header" }
   };
 }
 
+function getState(tabId) {
+  return tabState.get(tabId) || defaultState();
+}
+
+function isOn(state) {
+  return Boolean(state.strip || state.inject.enabled);
+}
+
+const stateKey = (tabId) => `state_tab_${tabId}`;
+
+async function saveState(tabId, state) {
+  if (!isOn(state) && !state.inject.value) {
+    tabState.delete(tabId);
+    try {
+      await chrome.storage.session.remove(stateKey(tabId));
+    } catch (e) {}
+    return;
+  }
+  tabState.set(tabId, state);
+  try {
+    await chrome.storage.session.set({ [stateKey(tabId)]: state });
+  } catch (e) {}
+}
+
+// On every worker boot, rehydrate from session storage and from any
+// surviving DNR session rules. Every event handler waits on this
+// promise before reading tabState.
+const rehydrated = (async () => {
+  try {
+    const all = await chrome.storage.session.get(null);
+    for (const [k, v] of Object.entries(all)) {
+      if (k.startsWith("state_tab_") && v && typeof v === "object") {
+        const tabId = Number(k.slice("state_tab_".length));
+        if (Number.isFinite(tabId)) tabState.set(tabId, v);
+      }
+    }
+  } catch (e) {}
+  // Defensive fallback: if a DNR rule exists for a tab but we have no
+  // stored state, treat it as a strip-only tab so the badge is honest.
+  try {
+    const rules = await chrome.declarativeNetRequest.getSessionRules();
+    for (const r of rules) {
+      const ids = r.condition && r.condition.tabIds;
+      if (Array.isArray(ids)) {
+        for (const id of ids) {
+          if (!tabState.has(id)) {
+            const s = defaultState();
+            s.strip = true;
+            tabState.set(id, s);
+          }
+        }
+      }
+    }
+  } catch (e) {}
+})();
+
+// ---------------------------------------------------------------------------
+// DNR rule management
+//
+// Each tab gets at most ONE session rule. The rule's responseHeaders
+// list is built from the current state:
+//   - inject (header mode)  → set CSP to user value, remove other variants
+//   - strip only            → remove all four CSP-family headers
+//   - neither               → no rule
+//
+// Combining strip + inject in one rule avoids ordering questions
+// between two separate rules.
+
+const RULE_BASE = 1000;
+
+function ruleIdFor(tabId) {
+  return RULE_BASE + tabId;
+}
+
+function buildRule(tabId, state) {
+  const headerInject =
+    state.inject.enabled &&
+    (state.inject.mode === "header" || state.inject.mode === "both") &&
+    state.inject.value;
+
+  if (!state.strip && !headerInject) return null;
+
+  const responseHeaders = [];
+  if (headerInject) {
+    responseHeaders.push({
+      header: "content-security-policy",
+      operation: "set",
+      value: state.inject.value
+    });
+    // Remove report-only and legacy variants so only the injected CSP is in effect.
+    responseHeaders.push({ header: "content-security-policy-report-only", operation: "remove" });
+    responseHeaders.push({ header: "x-webkit-csp", operation: "remove" });
+    responseHeaders.push({ header: "x-content-security-policy", operation: "remove" });
+  } else {
+    for (const h of CSP_HEADERS) {
+      responseHeaders.push({ header: h, operation: "remove" });
+    }
+  }
+
+  return {
+    id: ruleIdFor(tabId),
+    priority: 1,
+    action: { type: "modifyHeaders", responseHeaders },
+    condition: { tabIds: [tabId], resourceTypes: RESOURCE_TYPES }
+  };
+}
+
+async function syncRule(tabId, state) {
+  const rule = buildRule(tabId, state);
+  try {
+    await chrome.declarativeNetRequest.updateSessionRules({
+      removeRuleIds: [ruleIdFor(tabId)],
+      ...(rule ? { addRules: [rule] } : {})
+    });
+  } catch (e) {
+    // Ignore — rule may already be gone.
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Action / icon painting
+
 function buildPaintOps(on, target) {
-  // target is either { tabId } for a per-tab override, or {} for the
-  // action's global default.
   const ops = [
     chrome.action.setIcon({ ...target, path: on ? ICONS.on : ICONS.off }),
     chrome.action.setTitle({
       ...target,
       title: on
-        ? "CSP DISABLER: ON — click to turn off (CSP will work normally)"
-        : "CSP DISABLER: OFF — click to turn on (CSP will be stripped)"
+        ? "CSP Disabler is active for this tab — click to open"
+        : "CSP Disabler — click to open"
     }),
     chrome.action.setBadgeText({ ...target, text: on ? "ON" : "OFF" }),
     chrome.action.setBadgeBackgroundColor({
@@ -116,55 +212,55 @@ function buildPaintOps(on, target) {
 async function paintTab(tabId, on) {
   try {
     await Promise.all(buildPaintOps(on, { tabId }));
-  } catch (e) {
-    // Tab may have closed mid-update; ignore.
-  }
+  } catch (e) {}
 }
 
-// Set the action's GLOBAL default state. This is what Chrome briefly
-// renders during a tab's navigation transition, before the per-tab
-// override is reapplied. By snapping the global default to match the
-// navigating tab's state right before navigation, we eliminate the
-// flash to the wrong state on refresh.
 async function paintGlobal(on) {
   try {
     await Promise.all(buildPaintOps(on, {}));
-  } catch (e) {
-    // Best effort.
-  }
+  } catch (e) {}
 }
 
 async function paintCurrentState(tabId) {
   await rehydrated;
-  await paintTab(tabId, activeTabs.has(tabId));
+  await paintTab(tabId, isOn(getState(tabId)));
 }
 
-async function setTabOn(tabId, on) {
+// ---------------------------------------------------------------------------
+// State-mutation entry points
+
+async function applyState(tabId, state, { reload } = { reload: true }) {
+  await saveState(tabId, state);
+  const on = isOn(state);
+  await Promise.all([paintTab(tabId, on), syncRule(tabId, state)]);
+  if (reload) {
+    try {
+      await chrome.tabs.reload(tabId, { bypassCache: false });
+    } catch (e) {}
+  }
+}
+
+async function setStrip(tabId, strip) {
   await rehydrated;
-  if (on) activeTabs.add(tabId);
-  else activeTabs.delete(tabId);
-
-  // Run the paint and the DNR rule update in parallel. The paint is
-  // a few small chrome.action IPCs and finishes in ~5-10ms; the rule
-  // update is heavier. Awaiting them serially used to mean the user
-  // saw the previous badge state for the entire rule-update window.
-  const ruleUpdate = on
-    ? chrome.declarativeNetRequest.updateSessionRules({
-        removeRuleIds: [ruleIdFor(tabId)],
-        addRules: [makeRule(tabId)]
-      })
-    : chrome.declarativeNetRequest.updateSessionRules({
-        removeRuleIds: [ruleIdFor(tabId)]
-      });
-  await Promise.all([paintTab(tabId, on), ruleUpdate]);
+  const state = { ...getState(tabId), strip };
+  // The popup sends an explicit { type: "reload" } after this so it
+  // can decide when to reload — don't reload here.
+  await applyState(tabId, state, { reload: false });
 }
 
-// Toolbar click is now handled by the popup (default_popup in manifest).
-// The popup posts 'toggle' / 'getState' messages back to this worker.
+async function setInject(tabId, inject) {
+  await rehydrated;
+  const cur = getState(tabId);
+  const next = {
+    ...cur,
+    inject: { ...cur.inject, ...inject }
+  };
+  await applyState(tabId, next, { reload: false });
+}
 
-// Always paint the *correct* state (not just OFF) on routine tab events.
-// This way, even if the worker was just woken up by one of these events,
-// the badge ends up matching what activeTabs actually says.
+// ---------------------------------------------------------------------------
+// Tab/navigation listeners
+
 chrome.tabs.onCreated.addListener((tab) => {
   if (typeof tab.id === "number") paintCurrentState(tab.id);
 });
@@ -174,63 +270,52 @@ chrome.tabs.onUpdated.addListener((tabId) => {
 });
 
 chrome.tabs.onActivated.addListener(async ({ tabId }) => {
-  // Sync the global default to the newly focused tab's state too.
-  // If the user refreshes right after switching tabs, the brief
-  // navigation-transition flash will already match the correct state.
   await rehydrated;
-  const on = activeTabs.has(tabId);
+  const on = isOn(getState(tabId));
   await Promise.all([paintTab(tabId, on), paintGlobal(on)]);
 });
 
-// webNavigation fires earlier than tabs.onUpdated. For every top-frame
-// navigation we both (a) snap the action's GLOBAL default state to
-// match the navigating tab's per-tab state, so the brief default
-// rendering during Chrome's nav transition shows the correct state,
-// and (b) re-assert the per-tab override afterward.
 chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
   if (details.frameId !== 0) return;
   await rehydrated;
-  const on = activeTabs.has(details.tabId);
+  const on = isOn(getState(details.tabId));
   await Promise.all([paintGlobal(on), paintTab(details.tabId, on)]);
 });
 
 chrome.webNavigation.onCommitted.addListener(async (details) => {
   if (details.frameId !== 0) return;
   await rehydrated;
-  const on = activeTabs.has(details.tabId);
+  const on = isOn(getState(details.tabId));
   await Promise.all([paintGlobal(on), paintTab(details.tabId, on)]);
 });
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
-  // Drop captured CSP for closed tabs.
+  // Drop captured CSP and per-tab state for closed tabs.
   cspByTab.delete(tabId);
+  metaByTab.delete(tabId);
+  tabState.delete(tabId);
   try {
-    await chrome.storage.session.remove(cspKey(tabId));
+    await chrome.storage.session.remove([
+      cspKey(tabId),
+      metaKey(tabId),
+      stateKey(tabId)
+    ]);
   } catch (e) {}
-
-  await rehydrated;
-  if (!activeTabs.has(tabId)) return;
-  activeTabs.delete(tabId);
   try {
     await chrome.declarativeNetRequest.updateSessionRules({
       removeRuleIds: [ruleIdFor(tabId)]
     });
-  } catch (e) {
-    // Already gone.
-  }
+  } catch (e) {}
 });
 
 // ---------------------------------------------------------------------------
-// CSP capture
-//
-// We snapshot the *original* CSP headers a server sent for each top-frame
-// response so the popup can show the user what would have applied. The DNR
-// rule strips the headers from what the page sees; chrome.webRequest is
-// observation-only in MV3 and lets us read the headers as received.
+// CSP capture (response headers + meta tags)
 
-const cspByTab = new Map(); // tabId -> { url, headers: [{name, value}] }
+const cspByTab = new Map(); // tabId -> { url, headers, capturedAt }
+const metaByTab = new Map(); // tabId -> { url, metas, capturedAt }
 
 const cspKey = (tabId) => `csp_tab_${tabId}`;
+const metaKey = (tabId) => `meta_tab_${tabId}`;
 
 chrome.webRequest.onHeadersReceived.addListener(
   (details) => {
@@ -261,22 +346,101 @@ chrome.webRequest.onHeadersReceived.addListener(
 async function getCspForTab(tabId) {
   if (cspByTab.has(tabId)) return cspByTab.get(tabId);
   try {
-    const result = await chrome.storage.session.get(cspKey(tabId));
-    const record = result[cspKey(tabId)];
-    if (record) {
-      cspByTab.set(tabId, record);
-      return record;
+    const r = await chrome.storage.session.get(cspKey(tabId));
+    const rec = r[cspKey(tabId)];
+    if (rec) {
+      cspByTab.set(tabId, rec);
+      return rec;
     }
   } catch (e) {}
   return null;
 }
 
+// On-demand: read CSP <meta> tags from the current document. Cached so
+// the popup doesn't have to wait on a script execute every time.
+async function captureMetaCsp(tabId) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        const re = /^(content-security-policy|content-security-policy-report-only|x-webkit-csp|x-content-security-policy)$/i;
+        const out = [];
+        for (const m of document.querySelectorAll("meta[http-equiv]")) {
+          const name = m.getAttribute("http-equiv") || "";
+          if (re.test(name)) {
+            out.push({
+              name,
+              value: m.getAttribute("content") || "",
+              injected: m.getAttribute("data-csp-disabler-injected") === "1"
+            });
+          }
+        }
+        return { url: location.href, metas: out };
+      }
+    });
+    const result = results && results[0] && results[0].result;
+    if (result) {
+      const record = {
+        url: result.url,
+        metas: result.metas,
+        capturedAt: Date.now()
+      };
+      metaByTab.set(tabId, record);
+      try {
+        await chrome.storage.session.set({ [metaKey(tabId)]: record });
+      } catch (e) {}
+      return record;
+    }
+  } catch (e) {
+    // chrome:// pages, devtools, etc. — nothing to do.
+  }
+  return null;
+}
+
+async function getMetaForTab(tabId) {
+  // Prefer fresh capture; fall back to cache.
+  const fresh = await captureMetaCsp(tabId);
+  if (fresh) return fresh;
+  if (metaByTab.has(tabId)) return metaByTab.get(tabId);
+  try {
+    const r = await chrome.storage.session.get(metaKey(tabId));
+    if (r[metaKey(tabId)]) return r[metaKey(tabId)];
+  } catch (e) {}
+  return null;
+}
+
 // ---------------------------------------------------------------------------
-// Popup message handlers
+// Theme persistence
+
+const THEME_KEY = "ui_theme";
+
+async function getTheme() {
+  try {
+    const r = await chrome.storage.local.get(THEME_KEY);
+    return r[THEME_KEY] === "dark" ? "dark" : "light";
+  } catch (e) {
+    return "light";
+  }
+}
+
+async function setTheme(theme) {
+  try {
+    await chrome.storage.local.set({ [THEME_KEY]: theme });
+  } catch (e) {}
+}
+
+// ---------------------------------------------------------------------------
+// Message handlers
 //
-// The popup talks to the worker over chrome.runtime.sendMessage:
-//   { type: "getState", tabId }   → { on, csp }
-//   { type: "toggle",  tabId }    → { on }      (also reloads the tab)
+// Popup → background:
+//   { type: "getState",    tabId } → { on, strip, inject, csp, meta, theme }
+//   { type: "setStrip",    tabId, strip:bool }            → { ok }
+//   { type: "setInject",   tabId, inject:{enabled?,value?,mode?} } → { ok }
+//   { type: "reload",      tabId }                        → { ok }
+//   { type: "setTheme",    theme:"light"|"dark" }         → { ok }
+//
+// Content script → background:
+//   { type: "getMetaInject" } → { metaCsp: string | null }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
@@ -286,10 +450,33 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return;
       }
 
+      if (msg.type === "getMetaInject") {
+        await rehydrated;
+        const tabId = sender.tab && sender.tab.id;
+        if (typeof tabId !== "number") {
+          sendResponse({ metaCsp: null });
+          return;
+        }
+        const s = getState(tabId);
+        const wantMeta =
+          s.inject.enabled &&
+          (s.inject.mode === "meta" || s.inject.mode === "both") &&
+          s.inject.value;
+        sendResponse({ metaCsp: wantMeta ? s.inject.value : null });
+        return;
+      }
+
       const tabId =
         typeof msg.tabId === "number"
           ? msg.tabId
           : sender.tab && sender.tab.id;
+
+      if (msg.type === "setTheme") {
+        await setTheme(msg.theme === "dark" ? "dark" : "light");
+        sendResponse({ ok: true });
+        return;
+      }
+
       if (typeof tabId !== "number" || tabId < 0) {
         sendResponse({ error: "no tab" });
         return;
@@ -297,22 +484,40 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
       if (msg.type === "getState") {
         await rehydrated;
-        const on = activeTabs.has(tabId);
-        const csp = await getCspForTab(tabId);
-        sendResponse({ on, csp });
+        const s = getState(tabId);
+        const [csp, meta, theme] = await Promise.all([
+          getCspForTab(tabId),
+          getMetaForTab(tabId),
+          getTheme()
+        ]);
+        sendResponse({
+          on: isOn(s),
+          strip: s.strip,
+          inject: s.inject,
+          csp,
+          meta,
+          theme
+        });
         return;
       }
 
-      if (msg.type === "toggle") {
-        await rehydrated;
-        const next = !activeTabs.has(tabId);
-        await setTabOn(tabId, next);
-        // Snap global default too so the upcoming reload doesn't flash.
-        paintGlobal(next);
+      if (msg.type === "setStrip") {
+        await setStrip(tabId, Boolean(msg.strip));
+        sendResponse({ ok: true });
+        return;
+      }
+
+      if (msg.type === "setInject") {
+        await setInject(tabId, msg.inject || {});
+        sendResponse({ ok: true });
+        return;
+      }
+
+      if (msg.type === "reload") {
         try {
           await chrome.tabs.reload(tabId, { bypassCache: false });
         } catch (e) {}
-        sendResponse({ on: next });
+        sendResponse({ ok: true });
         return;
       }
 
@@ -321,17 +526,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ error: String(e && e.message ? e.message : e) });
     }
   })();
-  // Keep the message channel open for the async sendResponse above.
   return true;
 });
 
-// Sensible global defaults. We deliberately do NOT set the global default
-// badge text to "OFF". Per-tab badges are set explicitly via paintTab on
-// every tab event, so every tab ends up with a correct per-tab override.
-// The only window where the global default applies is during a tab's
-// brief navigation transition — and in that window we want NOTHING to
-// flash, not "OFF". Otherwise you see ON → OFF → ON when toggling on
-// a CSP-protected page that has to reload.
+// ---------------------------------------------------------------------------
+// Lifecycle
+
 async function setGlobalDefaults() {
   try {
     await chrome.action.setBadgeText({ text: "" });
@@ -339,19 +539,18 @@ async function setGlobalDefaults() {
     if (chrome.action.setBadgeTextColor) {
       await chrome.action.setBadgeTextColor({ color: "#ffffff" });
     }
-    await chrome.action.setTitle({
-      title: "CSP DISABLER: OFF — click to turn on (CSP will be stripped)"
-    });
-  } catch (e) {
-    // Best effort.
-  }
+    await chrome.action.setTitle({ title: "CSP Disabler — click to open" });
+  } catch (e) {}
 }
 
-// Wipe state on install / update / browser startup so we never leak
-// rules pointing at tab IDs that no longer exist.
 async function resetAll() {
   await rehydrated;
-  activeTabs.clear();
+  tabState.clear();
+  try {
+    const all = await chrome.storage.session.get(null);
+    const keys = Object.keys(all).filter((k) => k.startsWith("state_tab_"));
+    if (keys.length) await chrome.storage.session.remove(keys);
+  } catch (e) {}
   const existing = await chrome.declarativeNetRequest.getSessionRules();
   if (existing.length) {
     await chrome.declarativeNetRequest.updateSessionRules({
@@ -371,14 +570,12 @@ async function resetAll() {
 chrome.runtime.onInstalled.addListener(resetAll);
 chrome.runtime.onStartup.addListener(resetAll);
 
-// First-boot defaults (covers the case where the worker started for some
-// other reason and neither onInstalled nor onStartup fires).
+// First-boot defaults.
 setGlobalDefaults();
 
-// On every service-worker boot, repaint the currently-focused tabs as
-// soon as we can. If the worker was woken up by a refresh, this races
-// the navigation paint: the sooner our per-tab override re-asserts,
-// the less of the default-icon flash the user can see.
+// On every worker boot, paint open tabs and snap the global default
+// to the focused tab so the very first refresh after a wake-up
+// doesn't flash.
 (async () => {
   await rehydrated;
   try {
@@ -386,20 +583,16 @@ setGlobalDefaults();
     await Promise.all(
       tabs.map((t) =>
         typeof t.id === "number"
-          ? paintTab(t.id, activeTabs.has(t.id))
+          ? paintTab(t.id, isOn(getState(t.id)))
           : Promise.resolve()
       )
     );
-    // Snap the global default to the user's focused tab so the very
-    // first refresh after the worker wakes up doesn't flash either.
     const [focused] = await chrome.tabs.query({
       active: true,
       lastFocusedWindow: true
     });
     if (focused && typeof focused.id === "number") {
-      await paintGlobal(activeTabs.has(focused.id));
+      await paintGlobal(isOn(getState(focused.id)));
     }
-  } catch (e) {
-    // Best effort.
-  }
+  } catch (e) {}
 })();
