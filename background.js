@@ -182,11 +182,16 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   }
 });
 
-// Sensible global defaults so newly opened tabs never show a blank badge
-// while the service worker spins up.
+// Sensible global defaults. We deliberately do NOT set the global default
+// badge text to "OFF". Per-tab badges are set explicitly via paintTab on
+// every tab event, so every tab ends up with a correct per-tab override.
+// The only window where the global default applies is during a tab's
+// brief navigation transition — and in that window we want NOTHING to
+// flash, not "OFF". Otherwise you see ON → OFF → ON when toggling on
+// a CSP-protected page that has to reload.
 async function setGlobalDefaults() {
   try {
-    await chrome.action.setBadgeText({ text: "OFF" });
+    await chrome.action.setBadgeText({ text: "" });
     await chrome.action.setBadgeBackgroundColor({ color: COLOR_OFF });
     if (chrome.action.setBadgeTextColor) {
       await chrome.action.setBadgeTextColor({ color: "#ffffff" });
