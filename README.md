@@ -26,8 +26,11 @@ touched, matching the upstream extension's narrower scope.
   rule scoped to that tab via `condition.tabIds`, then reloads the tab.
 - Clicking again removes the rule and reloads the tab so the original CSP
   takes effect.
-- The toolbar icon and a small `OFF` badge show per-tab state, so you can
-  always see at a glance which tabs have CSP disabled.
+- The toolbar icon shows the per-tab state at all times:
+  - **Green icon + `ON` badge**  — extension is stripping CSP for this tab.
+  - **Red icon + `OFF` badge**   — CSP is working normally for this tab.
+- Every tab gets a clear `OFF` badge by default (no "flashing off" blank
+  state).
 - Per-tab rules and state are cleared automatically when a tab is closed,
   the extension is reloaded, or the browser restarts (session rules do not
   persist across browser restarts).

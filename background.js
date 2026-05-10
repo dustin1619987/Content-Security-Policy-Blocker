@@ -1,3 +1,7 @@
+// Visual states:
+//   ON  = extension is actively stripping CSP for the tab → green icon, "ON"  badge
+//   OFF = CSP is working normally for the tab            → red   icon, "OFF" badge
+
 const ICONS = {
   on: {
     16: "icons/icon-on-16.png",
@@ -12,6 +16,9 @@ const ICONS = {
     128: "icons/icon-off-128.png"
   }
 };
+
+const COLOR_ON = "#27ae60";  // green
+const COLOR_OFF = "#c0392b"; // red
 
 const CSP_HEADERS = [
   "content-security-policy",
@@ -37,9 +44,9 @@ const RESOURCE_TYPES = [
   "other"
 ];
 
-// Tabs where CSP is currently being stripped. Lives only for the browser
-// session — session rules and this Set are both cleared on browser restart.
-const disabledTabs = new Set();
+// Tabs where the extension is currently ON (CSP being stripped).
+// Lives only for the browser session.
+const activeTabs = new Set();
 
 function ruleIdFor(tabId) {
   // Session rule IDs must be positive 32-bit integers; tab IDs are positive,
@@ -65,63 +72,86 @@ function makeRule(tabId) {
   };
 }
 
-async function updateIcon(tabId) {
-  const disabled = disabledTabs.has(tabId);
+async function paintTab(tabId, on) {
   try {
     await chrome.action.setIcon({
       tabId,
-      path: disabled ? ICONS.on : ICONS.off
+      path: on ? ICONS.on : ICONS.off
     });
     await chrome.action.setTitle({
       tabId,
-      title: disabled
-        ? "Content-Security-Policy is DISABLED for this tab — click to re-enable"
-        : "Disable Content-Security-Policy for this tab"
+      title: on
+        ? "CSP DISABLER: ON — click to turn off (CSP will work normally)"
+        : "CSP DISABLER: OFF — click to turn on (CSP will be stripped)"
     });
     await chrome.action.setBadgeText({
       tabId,
-      text: disabled ? "OFF" : ""
+      text: on ? "ON" : "OFF"
     });
     await chrome.action.setBadgeBackgroundColor({
       tabId,
-      color: "#c0392b"
+      color: on ? COLOR_ON : COLOR_OFF
     });
+    // White text reads on both red and green backgrounds.
+    if (chrome.action.setBadgeTextColor) {
+      await chrome.action.setBadgeTextColor({ tabId, color: "#ffffff" });
+    }
   } catch (e) {
     // Tab may have closed mid-update; ignore.
   }
 }
 
-async function setTabDisabled(tabId, disabled) {
-  if (disabled) {
-    disabledTabs.add(tabId);
+async function setTabOn(tabId, on) {
+  if (on) {
+    activeTabs.add(tabId);
     await chrome.declarativeNetRequest.updateSessionRules({
       removeRuleIds: [ruleIdFor(tabId)],
       addRules: [makeRule(tabId)]
     });
   } else {
-    disabledTabs.delete(tabId);
+    activeTabs.delete(tabId);
     await chrome.declarativeNetRequest.updateSessionRules({
       removeRuleIds: [ruleIdFor(tabId)]
     });
   }
-  await updateIcon(tabId);
+  await paintTab(tabId, on);
 }
 
+// Toolbar click toggles the current tab and reloads it so the new
+// response (with or without CSP) is fetched immediately.
 chrome.action.onClicked.addListener(async (tab) => {
   if (typeof tab.id !== "number" || tab.id < 0) return;
-  const next = !disabledTabs.has(tab.id);
-  await setTabDisabled(tab.id, next);
-  // Reload so the new response (with or without CSP) is fetched.
+  const next = !activeTabs.has(tab.id);
+  await setTabOn(tab.id, next);
   try {
     await chrome.tabs.reload(tab.id, { bypassCache: false });
   } catch (e) {
-    // Tab may not be reloadable (e.g., chrome:// pages); ignore.
+    // Some tabs (chrome://, devtools, etc.) cannot be reloaded; ignore.
   }
 });
 
+// Make sure every tab shows a clear OFF state by default — no blank icon,
+// no "flash off". This paints the badge on tabs as we see them.
+async function paintIdle(tabId) {
+  if (activeTabs.has(tabId)) return;
+  await paintTab(tabId, false);
+}
+
+chrome.tabs.onCreated.addListener((tab) => {
+  if (typeof tab.id === "number") paintIdle(tab.id);
+});
+
+chrome.tabs.onUpdated.addListener((tabId) => {
+  paintIdle(tabId);
+});
+
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+  paintIdle(tabId);
+});
+
 chrome.tabs.onRemoved.addListener(async (tabId) => {
-  if (!disabledTabs.has(tabId)) return;
-  disabledTabs.delete(tabId);
+  if (!activeTabs.has(tabId)) return;
+  activeTabs.delete(tabId);
   try {
     await chrome.declarativeNetRequest.updateSessionRules({
       removeRuleIds: [ruleIdFor(tabId)]
@@ -131,16 +161,42 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   }
 });
 
-// Reset state on install / update / browser startup so we don't leak rules
-// pointing at tab IDs that no longer exist.
+// Set sensible global defaults so newly opened tabs never show a blank
+// badge while the service worker spins up.
+async function setGlobalDefaults() {
+  try {
+    await chrome.action.setBadgeText({ text: "OFF" });
+    await chrome.action.setBadgeBackgroundColor({ color: COLOR_OFF });
+    if (chrome.action.setBadgeTextColor) {
+      await chrome.action.setBadgeTextColor({ color: "#ffffff" });
+    }
+    await chrome.action.setTitle({
+      title: "CSP DISABLER: OFF — click to turn on (CSP will be stripped)"
+    });
+  } catch (e) {
+    // Ignore — defaults are best-effort.
+  }
+}
+
+// Reset session state on install / update / browser startup so we don't
+// leak rules pointing at tab IDs that no longer exist.
 async function resetAll() {
-  disabledTabs.clear();
+  activeTabs.clear();
   const existing = await chrome.declarativeNetRequest.getSessionRules();
   if (existing.length) {
     await chrome.declarativeNetRequest.updateSessionRules({
       removeRuleIds: existing.map((r) => r.id)
     });
   }
+  await setGlobalDefaults();
+
+  // Paint every currently open tab with the OFF state.
+  const tabs = await chrome.tabs.query({});
+  await Promise.all(
+    tabs.map((t) =>
+      typeof t.id === "number" ? paintTab(t.id, false) : Promise.resolve()
+    )
+  );
 }
 
 chrome.runtime.onInstalled.addListener(resetAll);

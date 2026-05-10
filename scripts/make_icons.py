@@ -1,8 +1,8 @@
 """Generate toolbar icons for the extension.
 
 Creates a stylized shield in two states:
-- "on"  : red shield (CSP currently DISABLED by extension)
-- "off" : gray shield (CSP currently ENABLED, extension idle)
+- "on"  : green shield (extension ACTIVE, stripping CSP)
+- "off" : red shield   (extension IDLE, CSP normal)
 """
 from pathlib import Path
 from PIL import Image, ImageDraw
@@ -14,10 +14,10 @@ OUT.mkdir(parents=True, exist_ok=True)
 SIZES = (16, 32, 48, 128)
 
 # Colors
-ON_FILL = (217, 48, 37, 255)        # red
-ON_OUTLINE = (140, 25, 20, 255)
-OFF_FILL = (140, 140, 140, 255)     # gray
-OFF_OUTLINE = (90, 90, 90, 255)
+ON_FILL = (39, 174, 96, 255)        # green = extension ON (CSP stripped)
+ON_OUTLINE = (20, 110, 60, 255)
+OFF_FILL = (217, 48, 37, 255)       # red   = extension OFF (CSP normal)
+OFF_OUTLINE = (140, 25, 20, 255)
 WHITE = (255, 255, 255, 255)
 
 
