@@ -45,12 +45,30 @@ const RESOURCE_TYPES = [
 ];
 
 // Tabs where the extension is currently ON (CSP being stripped).
-// Lives only for the browser session.
 const activeTabs = new Set();
 
+// MV3 service workers are killed when idle. Session rules persist across
+// those restarts, but our in-memory Set does not — so on every worker
+// boot we rebuild the Set from the surviving rules. Every event handler
+// awaits this promise before reading activeTabs, otherwise we'd race
+// against rehydration and report a stale OFF state.
+const rehydrated = (async () => {
+  try {
+    const rules = await chrome.declarativeNetRequest.getSessionRules();
+    for (const rule of rules) {
+      const ids = rule.condition && rule.condition.tabIds;
+      if (Array.isArray(ids)) {
+        for (const id of ids) activeTabs.add(id);
+      }
+    }
+  } catch (e) {
+    // First boot or API unavailable — nothing to rehydrate.
+  }
+})();
+
 function ruleIdFor(tabId) {
-  // Session rule IDs must be positive 32-bit integers; tab IDs are positive,
-  // but bump by one to keep the namespace clean.
+  // Session rule IDs must be positive 32-bit integers; tab IDs are
+  // positive, but bump by one to keep the namespace clean.
   return tabId + 1;
 }
 
@@ -92,7 +110,6 @@ async function paintTab(tabId, on) {
       tabId,
       color: on ? COLOR_ON : COLOR_OFF
     });
-    // White text reads on both red and green backgrounds.
     if (chrome.action.setBadgeTextColor) {
       await chrome.action.setBadgeTextColor({ tabId, color: "#ffffff" });
     }
@@ -101,7 +118,13 @@ async function paintTab(tabId, on) {
   }
 }
 
+async function paintCurrentState(tabId) {
+  await rehydrated;
+  await paintTab(tabId, activeTabs.has(tabId));
+}
+
 async function setTabOn(tabId, on) {
+  await rehydrated;
   if (on) {
     activeTabs.add(tabId);
     await chrome.declarativeNetRequest.updateSessionRules({
@@ -121,6 +144,7 @@ async function setTabOn(tabId, on) {
 // response (with or without CSP) is fetched immediately.
 chrome.action.onClicked.addListener(async (tab) => {
   if (typeof tab.id !== "number" || tab.id < 0) return;
+  await rehydrated;
   const next = !activeTabs.has(tab.id);
   await setTabOn(tab.id, next);
   try {
@@ -130,26 +154,23 @@ chrome.action.onClicked.addListener(async (tab) => {
   }
 });
 
-// Make sure every tab shows a clear OFF state by default — no blank icon,
-// no "flash off". This paints the badge on tabs as we see them.
-async function paintIdle(tabId) {
-  if (activeTabs.has(tabId)) return;
-  await paintTab(tabId, false);
-}
-
+// Always paint the *correct* state (not just OFF) on routine tab events.
+// This way, even if the worker was just woken up by one of these events,
+// the badge ends up matching what activeTabs actually says.
 chrome.tabs.onCreated.addListener((tab) => {
-  if (typeof tab.id === "number") paintIdle(tab.id);
+  if (typeof tab.id === "number") paintCurrentState(tab.id);
 });
 
 chrome.tabs.onUpdated.addListener((tabId) => {
-  paintIdle(tabId);
+  paintCurrentState(tabId);
 });
 
 chrome.tabs.onActivated.addListener(({ tabId }) => {
-  paintIdle(tabId);
+  paintCurrentState(tabId);
 });
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
+  await rehydrated;
   if (!activeTabs.has(tabId)) return;
   activeTabs.delete(tabId);
   try {
@@ -161,8 +182,8 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   }
 });
 
-// Set sensible global defaults so newly opened tabs never show a blank
-// badge while the service worker spins up.
+// Sensible global defaults so newly opened tabs never show a blank badge
+// while the service worker spins up.
 async function setGlobalDefaults() {
   try {
     await chrome.action.setBadgeText({ text: "OFF" });
@@ -174,13 +195,14 @@ async function setGlobalDefaults() {
       title: "CSP DISABLER: OFF — click to turn on (CSP will be stripped)"
     });
   } catch (e) {
-    // Ignore — defaults are best-effort.
+    // Best effort.
   }
 }
 
-// Reset session state on install / update / browser startup so we don't
-// leak rules pointing at tab IDs that no longer exist.
+// Wipe state on install / update / browser startup so we never leak
+// rules pointing at tab IDs that no longer exist.
 async function resetAll() {
+  await rehydrated;
   activeTabs.clear();
   const existing = await chrome.declarativeNetRequest.getSessionRules();
   if (existing.length) {
@@ -190,7 +212,6 @@ async function resetAll() {
   }
   await setGlobalDefaults();
 
-  // Paint every currently open tab with the OFF state.
   const tabs = await chrome.tabs.query({});
   await Promise.all(
     tabs.map((t) =>
@@ -201,3 +222,7 @@ async function resetAll() {
 
 chrome.runtime.onInstalled.addListener(resetAll);
 chrome.runtime.onStartup.addListener(resetAll);
+
+// First-boot defaults (covers the case where the worker started for some
+// other reason and neither onInstalled nor onStartup fires).
+setGlobalDefaults();
