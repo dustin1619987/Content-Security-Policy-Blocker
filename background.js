@@ -90,31 +90,47 @@ function makeRule(tabId) {
   };
 }
 
-async function paintTab(tabId, on) {
-  // Run the four chrome.action calls in parallel. Each one is a separate
-  // IPC and awaiting them sequentially widens the window during which
-  // the default icon/badge is visible during navigation.
+function buildPaintOps(on, target) {
+  // target is either { tabId } for a per-tab override, or {} for the
+  // action's global default.
   const ops = [
-    chrome.action.setIcon({ tabId, path: on ? ICONS.on : ICONS.off }),
+    chrome.action.setIcon({ ...target, path: on ? ICONS.on : ICONS.off }),
     chrome.action.setTitle({
-      tabId,
+      ...target,
       title: on
         ? "CSP DISABLER: ON — click to turn off (CSP will work normally)"
         : "CSP DISABLER: OFF — click to turn on (CSP will be stripped)"
     }),
-    chrome.action.setBadgeText({ tabId, text: on ? "ON" : "OFF" }),
+    chrome.action.setBadgeText({ ...target, text: on ? "ON" : "OFF" }),
     chrome.action.setBadgeBackgroundColor({
-      tabId,
+      ...target,
       color: on ? COLOR_ON : COLOR_OFF
     })
   ];
   if (chrome.action.setBadgeTextColor) {
-    ops.push(chrome.action.setBadgeTextColor({ tabId, color: "#ffffff" }));
+    ops.push(chrome.action.setBadgeTextColor({ ...target, color: "#ffffff" }));
   }
+  return ops;
+}
+
+async function paintTab(tabId, on) {
   try {
-    await Promise.all(ops);
+    await Promise.all(buildPaintOps(on, { tabId }));
   } catch (e) {
     // Tab may have closed mid-update; ignore.
+  }
+}
+
+// Set the action's GLOBAL default state. This is what Chrome briefly
+// renders during a tab's navigation transition, before the per-tab
+// override is reapplied. By snapping the global default to match the
+// navigating tab's state right before navigation, we eliminate the
+// flash to the wrong state on refresh.
+async function paintGlobal(on) {
+  try {
+    await Promise.all(buildPaintOps(on, {}));
+  } catch (e) {
+    // Best effort.
   }
 }
 
@@ -168,22 +184,32 @@ chrome.tabs.onUpdated.addListener((tabId) => {
   paintCurrentState(tabId);
 });
 
-chrome.tabs.onActivated.addListener(({ tabId }) => {
-  paintCurrentState(tabId);
+chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+  // Sync the global default to the newly focused tab's state too.
+  // If the user refreshes right after switching tabs, the brief
+  // navigation-transition flash will already match the correct state.
+  await rehydrated;
+  const on = activeTabs.has(tabId);
+  await Promise.all([paintTab(tabId, on), paintGlobal(on)]);
 });
 
-// webNavigation fires earlier than tabs.onUpdated, which lets us
-// re-assert the per-tab icon/badge before Chrome paints the action's
-// default during the navigation transition. This is what kills the
-// brief flash you'd otherwise see when refreshing an ON tab.
-chrome.webNavigation.onBeforeNavigate.addListener((details) => {
-  if (details.frameId !== 0) return; // top frame only
-  paintCurrentState(details.tabId);
-});
-
-chrome.webNavigation.onCommitted.addListener((details) => {
+// webNavigation fires earlier than tabs.onUpdated. For every top-frame
+// navigation we both (a) snap the action's GLOBAL default state to
+// match the navigating tab's per-tab state, so the brief default
+// rendering during Chrome's nav transition shows the correct state,
+// and (b) re-assert the per-tab override afterward.
+chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
   if (details.frameId !== 0) return;
-  paintCurrentState(details.tabId);
+  await rehydrated;
+  const on = activeTabs.has(details.tabId);
+  await Promise.all([paintGlobal(on), paintTab(details.tabId, on)]);
+});
+
+chrome.webNavigation.onCommitted.addListener(async (details) => {
+  if (details.frameId !== 0) return;
+  await rehydrated;
+  const on = activeTabs.has(details.tabId);
+  await Promise.all([paintGlobal(on), paintTab(details.tabId, on)]);
 });
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
@@ -264,6 +290,15 @@ setGlobalDefaults();
           : Promise.resolve()
       )
     );
+    // Snap the global default to the user's focused tab so the very
+    // first refresh after the worker wakes up doesn't flash either.
+    const [focused] = await chrome.tabs.query({
+      active: true,
+      lastFocusedWindow: true
+    });
+    if (focused && typeof focused.id === "number") {
+      await paintGlobal(activeTabs.has(focused.id));
+    }
   } catch (e) {
     // Best effort.
   }
