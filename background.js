@@ -125,19 +125,22 @@ async function paintCurrentState(tabId) {
 
 async function setTabOn(tabId, on) {
   await rehydrated;
-  if (on) {
-    activeTabs.add(tabId);
-    await chrome.declarativeNetRequest.updateSessionRules({
-      removeRuleIds: [ruleIdFor(tabId)],
-      addRules: [makeRule(tabId)]
-    });
-  } else {
-    activeTabs.delete(tabId);
-    await chrome.declarativeNetRequest.updateSessionRules({
-      removeRuleIds: [ruleIdFor(tabId)]
-    });
-  }
-  await paintTab(tabId, on);
+  if (on) activeTabs.add(tabId);
+  else activeTabs.delete(tabId);
+
+  // Run the paint and the DNR rule update in parallel. The paint is
+  // a few small chrome.action IPCs and finishes in ~5-10ms; the rule
+  // update is heavier. Awaiting them serially used to mean the user
+  // saw the previous badge state for the entire rule-update window.
+  const ruleUpdate = on
+    ? chrome.declarativeNetRequest.updateSessionRules({
+        removeRuleIds: [ruleIdFor(tabId)],
+        addRules: [makeRule(tabId)]
+      })
+    : chrome.declarativeNetRequest.updateSessionRules({
+        removeRuleIds: [ruleIdFor(tabId)]
+      });
+  await Promise.all([paintTab(tabId, on), ruleUpdate]);
 }
 
 // Toolbar click toggles the current tab and reloads it so the new
