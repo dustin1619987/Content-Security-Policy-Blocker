@@ -3,8 +3,15 @@
 A Manifest V3 Chrome extension that disables the
 `Content-Security-Policy` response header on a **per-tab** basis.
 
-Click the toolbar icon to disable CSP for the current tab and reload it.
-Click again to re-enable CSP and reload. Other tabs are unaffected.
+Click the toolbar icon to open a popup with two tabs:
+
+- **Configuration** — an ON/OFF switch for the current tab and a copy of
+  the original `Content-Security-Policy` headers the server sent (captured
+  before the extension strips them).
+- **About** — version, author, and a usage warning.
+
+Toggling the switch disables CSP for the current tab and reloads it.
+Toggling again re-enables CSP and reloads. Other tabs are unaffected.
 
 ## What it removes
 
@@ -49,8 +56,9 @@ touched, matching the upstream extension's narrower scope.
 
 | File | Purpose |
 | --- | --- |
-| `manifest.json` | MV3 manifest. `<all_urls>` host access; `declarativeNetRequest` permission. |
-| `background.js` | Service worker. Toggles per-tab session rules, updates icon/badge, cleans up on tab close. |
+| `manifest.json` | MV3 manifest. `<all_urls>` host access; `declarativeNetRequest`, `webNavigation`, `webRequest`, `storage` permissions. |
+| `background.js` | Service worker. Toggles per-tab session rules, updates icon/badge, captures original CSP via `webRequest`, handles popup messages. |
+| `popup.html` / `popup.css` / `popup.js` | Toolbar popup UI: Configuration tab (toggle + captured CSP) and About tab. |
 | `icons/` | Toolbar icons in on / off states at 16, 32, 48, 128 px. |
 | `scripts/make_icons.py` | Regenerates the PNG icons from code (requires Pillow). |
 

@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CSP Disabler</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body data-state="off">
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <span class="brand-name">CSP Disabler</span>
+    </div>
+    <div class="status-pill" id="status-pill">
+      <span class="status-dot"></span>
+      <span id="status-label">OFF</span>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab is-active" role="tab" data-tab="config" aria-selected="true">
+      Configuration
+    </button>
+    <button class="tab" role="tab" data-tab="about" aria-selected="false">
+      About
+    </button>
+  </nav>
+
+  <main>
+    <section
+      id="panel-config"
+      class="panel is-active"
+      role="tabpanel"
+      aria-labelledby="tab-config"
+    >
+      <div class="row">
+        <div class="row-text">
+          <div class="row-title">CSP for this tab</div>
+          <div class="row-sub" id="state-sub">
+            CSP headers are working normally.
+          </div>
+        </div>
+        <button id="toggle-btn" class="toggle">
+          <span class="toggle-track">
+            <span class="toggle-thumb"></span>
+          </span>
+          <span class="toggle-label" id="toggle-label">Turn ON</span>
+        </button>
+      </div>
+
+      <div class="csp-block">
+        <div class="csp-block-head">
+          <span class="csp-block-title">Captured Content-Security-Policy</span>
+          <button id="copy-btn" class="copy-btn" type="button" disabled>
+            Copy
+          </button>
+        </div>
+        <div class="csp-meta">
+          <span id="csp-url" class="csp-url" title="">—</span>
+        </div>
+        <pre id="csp-pre" class="csp-pre">No CSP captured for this tab yet.
+
+Reload the page (or visit a CSP-protected site) to capture
+the headers the server sent.</pre>
+      </div>
+    </section>
+
+    <section
+      id="panel-about"
+      class="panel"
+      role="tabpanel"
+      aria-labelledby="tab-about"
+      hidden
+    >
+      <div class="about-card">
+        <h2 class="about-title">CSP Disabler</h2>
+        <dl class="about-list">
+          <div class="about-row">
+            <dt>Version</dt>
+            <dd id="about-version">—</dd>
+          </div>
+          <div class="about-row">
+            <dt>Created by</dt>
+            <dd>Dustin Price</dd>
+          </div>
+        </dl>
+
+        <div class="warning">
+          <div class="warning-head">⚠ For testing only</div>
+          <p>
+            Use this extension only for development, debugging, and authorized
+            security testing on sites you control or have permission to test.
+          </p>
+          <p>
+            Disabling Content-Security-Policy removes a real defense-in-depth
+            protection against cross-site scripting, clickjacking, and
+            data-injection attacks. <strong>Do not use this extension for
+            malicious purposes</strong> or on sites where you don't have
+            authorization. Re-enable CSP (or just close the tab) when you are
+            done.
+          </p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>

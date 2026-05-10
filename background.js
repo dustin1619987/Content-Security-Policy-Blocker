@@ -159,19 +159,8 @@ async function setTabOn(tabId, on) {
   await Promise.all([paintTab(tabId, on), ruleUpdate]);
 }
 
-// Toolbar click toggles the current tab and reloads it so the new
-// response (with or without CSP) is fetched immediately.
-chrome.action.onClicked.addListener(async (tab) => {
-  if (typeof tab.id !== "number" || tab.id < 0) return;
-  await rehydrated;
-  const next = !activeTabs.has(tab.id);
-  await setTabOn(tab.id, next);
-  try {
-    await chrome.tabs.reload(tab.id, { bypassCache: false });
-  } catch (e) {
-    // Some tabs (chrome://, devtools, etc.) cannot be reloaded; ignore.
-  }
-});
+// Toolbar click is now handled by the popup (default_popup in manifest).
+// The popup posts 'toggle' / 'getState' messages back to this worker.
 
 // Always paint the *correct* state (not just OFF) on routine tab events.
 // This way, even if the worker was just woken up by one of these events,
@@ -213,6 +202,12 @@ chrome.webNavigation.onCommitted.addListener(async (details) => {
 });
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
+  // Drop captured CSP for closed tabs.
+  cspByTab.delete(tabId);
+  try {
+    await chrome.storage.session.remove(cspKey(tabId));
+  } catch (e) {}
+
   await rehydrated;
   if (!activeTabs.has(tabId)) return;
   activeTabs.delete(tabId);
@@ -223,6 +218,111 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   } catch (e) {
     // Already gone.
   }
+});
+
+// ---------------------------------------------------------------------------
+// CSP capture
+//
+// We snapshot the *original* CSP headers a server sent for each top-frame
+// response so the popup can show the user what would have applied. The DNR
+// rule strips the headers from what the page sees; chrome.webRequest is
+// observation-only in MV3 and lets us read the headers as received.
+
+const cspByTab = new Map(); // tabId -> { url, headers: [{name, value}] }
+
+const cspKey = (tabId) => `csp_tab_${tabId}`;
+
+chrome.webRequest.onHeadersReceived.addListener(
+  (details) => {
+    if (details.type !== "main_frame") return;
+    if (typeof details.tabId !== "number" || details.tabId < 0) return;
+
+    const csp = (details.responseHeaders || [])
+      .filter((h) => CSP_HEADERS.includes((h.name || "").toLowerCase()))
+      .map((h) => ({ name: h.name, value: h.value }));
+
+    if (csp.length > 0) {
+      const record = { url: details.url, headers: csp, capturedAt: Date.now() };
+      cspByTab.set(details.tabId, record);
+      try {
+        chrome.storage.session.set({ [cspKey(details.tabId)]: record });
+      } catch (e) {}
+    } else {
+      cspByTab.delete(details.tabId);
+      try {
+        chrome.storage.session.remove(cspKey(details.tabId));
+      } catch (e) {}
+    }
+  },
+  { urls: ["<all_urls>"], types: ["main_frame"] },
+  ["responseHeaders", "extraHeaders"]
+);
+
+async function getCspForTab(tabId) {
+  if (cspByTab.has(tabId)) return cspByTab.get(tabId);
+  try {
+    const result = await chrome.storage.session.get(cspKey(tabId));
+    const record = result[cspKey(tabId)];
+    if (record) {
+      cspByTab.set(tabId, record);
+      return record;
+    }
+  } catch (e) {}
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Popup message handlers
+//
+// The popup talks to the worker over chrome.runtime.sendMessage:
+//   { type: "getState", tabId }   → { on, csp }
+//   { type: "toggle",  tabId }    → { on }      (also reloads the tab)
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  (async () => {
+    try {
+      if (!msg || typeof msg.type !== "string") {
+        sendResponse({ error: "bad message" });
+        return;
+      }
+
+      const tabId =
+        typeof msg.tabId === "number"
+          ? msg.tabId
+          : sender.tab && sender.tab.id;
+      if (typeof tabId !== "number" || tabId < 0) {
+        sendResponse({ error: "no tab" });
+        return;
+      }
+
+      if (msg.type === "getState") {
+        await rehydrated;
+        const on = activeTabs.has(tabId);
+        const csp = await getCspForTab(tabId);
+        sendResponse({ on, csp });
+        return;
+      }
+
+      if (msg.type === "toggle") {
+        await rehydrated;
+        const next = !activeTabs.has(tabId);
+        await setTabOn(tabId, next);
+        // Snap global default too so the upcoming reload doesn't flash.
+        paintGlobal(next);
+        try {
+          await chrome.tabs.reload(tabId, { bypassCache: false });
+        } catch (e) {}
+        sendResponse({ on: next });
+        return;
+      }
+
+      sendResponse({ error: "unknown message type" });
+    } catch (e) {
+      sendResponse({ error: String(e && e.message ? e.message : e) });
+    }
+  })();
+  // Keep the message channel open for the async sendResponse above.
+  return true;
 });
 
 // Sensible global defaults. We deliberately do NOT set the global default
