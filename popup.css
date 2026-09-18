@@ -707,3 +707,39 @@ main { padding: 12px 14px 14px; }
   padding-top: 6px;
   padding-bottom: 6px;
 }
+
+/* ==========================================================================
+   Service workers
+   ========================================================================== */
+
+.sw-entry-actions {
+  margin-top: 4px;
+}
+
+.sw-add-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.sw-input {
+  flex: 2 1 160px;
+  min-width: 0;
+  padding: 7px 9px;
+  font-size: 11.5px;
+  color: var(--text);
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+.sw-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.sw-input::placeholder { color: var(--text-mute); }
+.sw-input-scope { flex: 1 1 100px; }
+
+.sw-add-row .secondary-btn {
+  flex: 0 0 auto;
+}
