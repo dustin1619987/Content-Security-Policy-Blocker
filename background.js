@@ -280,6 +280,7 @@ chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
   await rehydrated;
   const on = isOn(getState(details.tabId));
   await Promise.all([paintGlobal(on), paintTab(details.tabId, on)]);
+  await clearLogs(details.tabId);
 });
 
 chrome.webNavigation.onCommitted.addListener(async (details) => {
@@ -294,11 +295,13 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
   cspByTab.delete(tabId);
   metaByTab.delete(tabId);
   tabState.delete(tabId);
+  logsByTab.delete(tabId);
   try {
     await chrome.storage.session.remove([
       cspKey(tabId),
       metaKey(tabId),
-      stateKey(tabId)
+      stateKey(tabId),
+      logKey(tabId)
     ]);
   } catch (e) {}
   try {
@@ -410,6 +413,67 @@ async function getMetaForTab(tabId) {
 }
 
 // ---------------------------------------------------------------------------
+// Logs (CSP violations + page console activity)
+//
+// logsByTab : Map<tabId, { violations: [], console: [] }>
+// Reset at the start of every main-frame navigation so the Logs tab
+// always reflects the page currently loaded in the tab. Capped per
+// array to keep memory/storage bounded on noisy pages.
+
+const logsByTab = new Map();
+const LOG_CAP = 300;
+const logKey = (tabId) => `logs_tab_${tabId}`;
+
+function getLogsRecord(tabId) {
+  if (!logsByTab.has(tabId)) {
+    logsByTab.set(tabId, { violations: [], console: [] });
+  }
+  return logsByTab.get(tabId);
+}
+
+function pushCapped(arr, item) {
+  arr.push(item);
+  if (arr.length > LOG_CAP) arr.splice(0, arr.length - LOG_CAP);
+}
+
+async function persistLogs(tabId) {
+  try {
+    await chrome.storage.session.set({ [logKey(tabId)]: logsByTab.get(tabId) });
+  } catch (e) {}
+}
+
+function addViolation(tabId, violation) {
+  const rec = getLogsRecord(tabId);
+  pushCapped(rec.violations, violation);
+  persistLogs(tabId);
+}
+
+function addConsoleEntry(tabId, entry) {
+  const rec = getLogsRecord(tabId);
+  pushCapped(rec.console, entry);
+  persistLogs(tabId);
+}
+
+async function getLogsForTab(tabId) {
+  if (logsByTab.has(tabId)) return logsByTab.get(tabId);
+  try {
+    const r = await chrome.storage.session.get(logKey(tabId));
+    if (r[logKey(tabId)]) {
+      logsByTab.set(tabId, r[logKey(tabId)]);
+      return r[logKey(tabId)];
+    }
+  } catch (e) {}
+  return { violations: [], console: [] };
+}
+
+async function clearLogs(tabId) {
+  logsByTab.set(tabId, { violations: [], console: [] });
+  try {
+    await chrome.storage.session.remove(logKey(tabId));
+  } catch (e) {}
+}
+
+// ---------------------------------------------------------------------------
 // Theme persistence
 
 const THEME_KEY = "ui_theme";
@@ -438,9 +502,14 @@ async function setTheme(theme) {
 //   { type: "setInject",   tabId, inject:{enabled?,value?,mode?} } → { ok }
 //   { type: "reload",      tabId }                        → { ok }
 //   { type: "setTheme",    theme:"light"|"dark" }         → { ok }
+//   { type: "getLogs",     tabId }                        → { violations, console }
+//   { type: "clearLogs",   tabId }                        → { ok }
+//   { type: "downloadFile", filename, content, mime }     → { ok, downloadId }
 //
 // Content script → background:
-//   { type: "getMetaInject" } → { metaCsp: string | null }
+//   { type: "getMetaInject" }              → { metaCsp: string | null }
+//   { type: "cspViolationLog", violation } → { ok }
+//   { type: "consoleLog", entry }          → { ok }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
@@ -477,6 +546,40 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return;
       }
 
+      if (msg.type === "downloadFile") {
+        try {
+          const blob = new Blob([msg.content || ""], {
+            type: msg.mime || "application/json"
+          });
+          const url = URL.createObjectURL(blob);
+          const downloadId = await chrome.downloads.download({
+            url,
+            filename: msg.filename || "export.json",
+            saveAs: false
+          });
+          setTimeout(() => URL.revokeObjectURL(url), 30000);
+          sendResponse({ ok: true, downloadId });
+        } catch (e) {
+          sendResponse({ error: String(e && e.message ? e.message : e) });
+        }
+        return;
+      }
+
+      // These arrive from the content script and don't need a response.
+      if (msg.type === "cspViolationLog") {
+        const id = sender.tab && sender.tab.id;
+        if (typeof id === "number") addViolation(id, msg.violation || {});
+        sendResponse({ ok: true });
+        return;
+      }
+
+      if (msg.type === "consoleLog") {
+        const id = sender.tab && sender.tab.id;
+        if (typeof id === "number") addConsoleEntry(id, msg.entry || {});
+        sendResponse({ ok: true });
+        return;
+      }
+
       if (typeof tabId !== "number" || tabId < 0) {
         sendResponse({ error: "no tab" });
         return;
@@ -503,6 +606,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
       if (msg.type === "setStrip") {
         await setStrip(tabId, Boolean(msg.strip));
+        sendResponse({ ok: true });
+        return;
+      }
+
+      if (msg.type === "getLogs") {
+        const logs = await getLogsForTab(tabId);
+        sendResponse(logs);
+        return;
+      }
+
+      if (msg.type === "clearLogs") {
+        await clearLogs(tabId);
         sendResponse({ ok: true });
         return;
       }

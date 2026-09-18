@@ -11,6 +11,7 @@ const els = {
     config: document.getElementById("panel-config"),
     custom: document.getElementById("panel-custom"),
     policy: document.getElementById("panel-policy"),
+    logs: document.getElementById("panel-logs"),
     about: document.getElementById("panel-about")
   },
 
@@ -50,6 +51,21 @@ const els = {
   policyCopyBtn: document.getElementById("policy-copy-btn"),
   policyOpenBtn: document.getElementById("policy-open-btn"),
 
+  // Logs tab
+  logsSummarySub: document.getElementById("logs-summary-sub"),
+  logCategoryGrid: document.getElementById("log-category-grid"),
+  logViolationsList: document.getElementById("log-violations-list"),
+  logConsoleList: document.getElementById("log-console-list"),
+  logsRefreshBtn: document.getElementById("logs-refresh-btn"),
+  logsClearBtn: document.getElementById("logs-clear-btn"),
+  exportDebugBtn: document.getElementById("export-debug-btn"),
+  exportOriginalCspBtn: document.getElementById("export-original-csp-btn"),
+  exportSuggestedCspBtn: document.getElementById("export-suggested-csp-btn"),
+  exportJsonBtn: document.getElementById("export-json-btn"),
+  exportHarBtn: document.getElementById("export-har-btn"),
+  exportCspLogsBtn: document.getElementById("export-csp-logs-btn"),
+  exportConsoleLogsBtn: document.getElementById("export-console-logs-btn"),
+
   // About
   aboutVersion: document.getElementById("about-version")
 };
@@ -64,7 +80,11 @@ const state = {
   capturedMetaText: "",
   capturedUrl: "",
   capturedPolicyText: "",
-  detectedBrowserName: null
+  detectedBrowserName: null,
+  detectedBrowserVersion: null,
+  rawCsp: "",
+  rawMeta: "",
+  logs: { violations: [], console: [] }
 };
 
 // ---------------------------------------------------------------------------
@@ -117,6 +137,7 @@ function renderHeaders(record) {
     els.copyCurlBtn.disabled = true;
     state.capturedCspText = "";
     state.capturedUrl = "";
+    state.rawCsp = "";
     return;
   }
 
@@ -128,6 +149,11 @@ function renderHeaders(record) {
   state.capturedCspText = record.headers
     .map(({ name, value }) => `${name}: ${value}`)
     .join("\n");
+
+  const enforced = record.headers.find(
+    (h) => (h.name || "").toLowerCase() === "content-security-policy"
+  );
+  state.rawCsp = (enforced || record.headers[0]).value || "";
 
   els.cspPre.textContent = "";
   for (const { name, value } of record.headers) {
@@ -149,6 +175,7 @@ function renderMeta(record) {
     els.metaPre.classList.add("is-empty");
     els.copyMetaBtn.disabled = true;
     state.capturedMetaText = "";
+    state.rawMeta = "";
     return;
   }
   els.metaPre.classList.remove("is-empty");
@@ -156,6 +183,9 @@ function renderMeta(record) {
   state.capturedMetaText = record.metas
     .map((m) => `${m.name}: ${m.value}${m.injected ? "  (injected)" : ""}`)
     .join("\n");
+
+  const nonInjected = record.metas.find((m) => !m.injected);
+  state.rawMeta = (nonInjected || record.metas[0]).value || "";
 
   els.metaPre.textContent = "";
   for (const m of record.metas) {
@@ -415,6 +445,7 @@ async function detectBrowser() {
 
 function renderPolicyBrowser(info) {
   state.detectedBrowserName = info.name || null;
+  state.detectedBrowserVersion = info.version || null;
   els.policyBrowserName.textContent = info.name || "Unknown";
   els.policyBrowserVersion.textContent = info.version || "Unknown";
   els.policyOs.textContent = info.os || "Unknown";
@@ -503,6 +534,545 @@ function openPolicyPage() {
 }
 
 // ---------------------------------------------------------------------------
+// Logs tab
+//
+// Violations arrive from content.js (which listens for the browser's own
+// `securitypolicyviolation` DOM event) and console activity from a
+// MAIN-world console hook, both relayed through the background worker.
+// Everything rendered here comes from the page, so it's built with
+// textContent/DOM nodes rather than innerHTML.
+
+const LOG_CATEGORIES = [
+  ["script", "Blocked Scripts"],
+  ["image", "Blocked Images"],
+  ["frame", "Blocked Frames"],
+  ["connection", "Blocked Connections"],
+  ["inlineScript", "Inline Script Violations"],
+  ["eval", "eval Violations"],
+  ["style", "Blocked Styles"],
+  ["inlineStyle", "Inline Style Violations"],
+  ["font", "Blocked Fonts"],
+  ["media", "Blocked Media"],
+  ["object", "Blocked Objects"],
+  ["manifest", "Blocked Manifests"],
+  ["worker", "Blocked Workers"],
+  ["other", "Other Violations"]
+];
+const LOG_CATEGORY_LABELS = Object.fromEntries(LOG_CATEGORIES);
+
+function categorizeViolation(v) {
+  const dir = (v.effectiveDirective || v.violatedDirective || "").toLowerCase();
+  const blocked = (v.blockedURI || "").toLowerCase();
+
+  if (dir.startsWith("script-src")) {
+    if (blocked === "eval" || blocked === "wasm-eval") return "eval";
+    if (blocked === "inline") return "inlineScript";
+    return "script";
+  }
+  if (dir.startsWith("style-src")) {
+    return blocked === "inline" ? "inlineStyle" : "style";
+  }
+  if (dir === "img-src") return "image";
+  if (dir === "frame-src" || dir === "child-src") return "frame";
+  if (dir === "connect-src") return "connection";
+  if (dir === "font-src") return "font";
+  if (dir === "media-src") return "media";
+  if (dir === "object-src") return "object";
+  if (dir === "manifest-src") return "manifest";
+  if (dir === "worker-src") return "worker";
+  return "other";
+}
+
+function countByCategory(violations) {
+  const counts = Object.fromEntries(LOG_CATEGORIES.map(([k]) => [k, 0]));
+  for (const v of violations) {
+    const cat = categorizeViolation(v);
+    counts[cat] = (counts[cat] || 0) + 1;
+  }
+  return counts;
+}
+
+function truncate(s, n) {
+  if (!s) return s;
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+
+function renderLogCategories(counts) {
+  els.logCategoryGrid.textContent = "";
+  for (const [key, label] of LOG_CATEGORIES) {
+    const count = counts[key] || 0;
+    const chip = document.createElement("div");
+    chip.className = "log-chip" + (count > 0 ? " has-hits" : "");
+    const labelSpan = document.createElement("span");
+    labelSpan.className = "log-chip-label";
+    labelSpan.textContent = label;
+    const countSpan = document.createElement("span");
+    countSpan.className = "log-chip-count";
+    countSpan.textContent = String(count);
+    chip.appendChild(labelSpan);
+    chip.appendChild(countSpan);
+    els.logCategoryGrid.appendChild(chip);
+  }
+}
+
+function renderViolationsList(violations) {
+  const el = els.logViolationsList;
+  el.textContent = "";
+  if (!violations.length) {
+    el.classList.add("is-empty");
+    el.textContent =
+      "No CSP violations captured yet. Reload the page to start capturing.";
+    return;
+  }
+  el.classList.remove("is-empty");
+  for (const v of violations.slice().reverse()) {
+    const entry = document.createElement("div");
+    entry.className = "log-entry";
+
+    const head = document.createElement("div");
+    head.className = "log-entry-head";
+    const badge = document.createElement("span");
+    badge.className = "log-badge";
+    badge.textContent = LOG_CATEGORY_LABELS[categorizeViolation(v)];
+    head.appendChild(badge);
+    const dir = document.createElement("span");
+    dir.className = "log-entry-sub";
+    dir.textContent =
+      (v.effectiveDirective || v.violatedDirective || "") +
+      (v.disposition === "report" ? "  (report-only — not actually blocked)" : "");
+    head.appendChild(dir);
+    entry.appendChild(head);
+
+    const main = document.createElement("div");
+    main.className = "log-entry-main";
+    main.textContent = truncate(v.blockedURI || "(blocked)", 90);
+    entry.appendChild(main);
+
+    const sub = document.createElement("div");
+    sub.className = "log-entry-sub";
+    const loc = v.sourceFile
+      ? `${truncate(v.sourceFile, 60)}:${v.lineNumber || 0}`
+      : "";
+    const time = new Date(v.time || Date.now()).toLocaleTimeString();
+    sub.textContent = [loc, time].filter(Boolean).join("  —  ");
+    entry.appendChild(sub);
+
+    el.appendChild(entry);
+  }
+}
+
+function renderConsoleList(entries) {
+  const el = els.logConsoleList;
+  el.textContent = "";
+  if (!entries.length) {
+    el.classList.add("is-empty");
+    el.textContent = "No console activity captured yet.";
+    return;
+  }
+  el.classList.remove("is-empty");
+  for (const c of entries.slice().reverse()) {
+    const entry = document.createElement("div");
+    entry.className = "log-entry";
+
+    const head = document.createElement("div");
+    head.className = "log-entry-head";
+    const badge = document.createElement("span");
+    badge.className = `log-badge level-${c.level || "log"}`;
+    badge.textContent = c.level || "log";
+    head.appendChild(badge);
+    if (c.kind) {
+      const kindSpan = document.createElement("span");
+      kindSpan.className = "log-entry-sub";
+      kindSpan.textContent = c.kind;
+      head.appendChild(kindSpan);
+    }
+    entry.appendChild(head);
+
+    const main = document.createElement("div");
+    main.className = "log-entry-main";
+    main.textContent = truncate(c.message || "", 160);
+    entry.appendChild(main);
+
+    const sub = document.createElement("div");
+    sub.className = "log-entry-sub";
+    const loc = c.sourceFile
+      ? `${truncate(c.sourceFile, 60)}:${c.lineNumber || 0}`
+      : "";
+    const time = new Date(c.time || Date.now()).toLocaleTimeString();
+    sub.textContent = [loc, time].filter(Boolean).join("  —  ");
+    entry.appendChild(sub);
+
+    el.appendChild(entry);
+  }
+}
+
+function renderLogs(logs) {
+  state.logs = logs;
+  renderLogCategories(countByCategory(logs.violations));
+  renderViolationsList(logs.violations);
+  renderConsoleList(logs.console);
+
+  const vCount = logs.violations.length;
+  const cCount = logs.console.length;
+  if (!vCount && !cCount) {
+    els.logsSummarySub.textContent = "No violations captured yet for this tab.";
+  } else {
+    els.logsSummarySub.textContent =
+      `${vCount} CSP violation${vCount === 1 ? "" : "s"} and ` +
+      `${cCount} console entr${cCount === 1 ? "y" : "ies"} captured for this tab.`;
+  }
+}
+
+async function loadLogs() {
+  if (state.tabId == null) return;
+  const reply = await send({ type: "getLogs", tabId: state.tabId });
+  renderLogs(
+    reply && Array.isArray(reply.violations)
+      ? reply
+      : { violations: [], console: [] }
+  );
+}
+
+async function onClearLogsClick() {
+  if (state.tabId == null) return;
+  els.logsClearBtn.disabled = true;
+  await send({ type: "clearLogs", tabId: state.tabId });
+  await loadLogs();
+  els.logsClearBtn.disabled = false;
+}
+
+// ---------------------------------------------------------------------------
+// Suggested CSP generator
+//
+// Parses the original policy (if any), then widens each directive just
+// enough to cover what was actually observed being blocked. This is a
+// starting point for a human to review, not a policy to deploy blindly —
+// the output says so.
+
+function parseCspText(policyText) {
+  const map = new Map();
+  if (!policyText) return map;
+  for (const part of policyText.split(";")) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const tokens = trimmed.split(/\s+/);
+    const directive = tokens.shift().toLowerCase();
+    if (!directive) continue;
+    if (!map.has(directive)) map.set(directive, new Set());
+    for (const t of tokens) map.get(directive).add(t);
+  }
+  return map;
+}
+
+function originFromUrl(u) {
+  try {
+    const parsed = new URL(u, state.url || undefined);
+    if (["data:", "blob:", "filesystem:"].includes(parsed.protocol)) {
+      return parsed.protocol;
+    }
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch (e) {
+    return null;
+  }
+}
+
+const CSP_DIRECTIVE_ORDER = [
+  "default-src",
+  "script-src",
+  "script-src-elem",
+  "script-src-attr",
+  "style-src",
+  "style-src-elem",
+  "style-src-attr",
+  "img-src",
+  "font-src",
+  "connect-src",
+  "frame-src",
+  "child-src",
+  "frame-ancestors",
+  "object-src",
+  "base-uri",
+  "form-action",
+  "manifest-src",
+  "media-src",
+  "worker-src"
+];
+
+function buildSuggestedCsp(rawPolicy, violations) {
+  const map = parseCspText(rawPolicy);
+  const notes = new Set();
+
+  for (const v of violations) {
+    const directive = (v.effectiveDirective || v.violatedDirective || "").toLowerCase();
+    if (!directive) continue;
+    if (!map.has(directive)) map.set(directive, new Set());
+    const set = map.get(directive);
+    const blocked = (v.blockedURI || "").toLowerCase();
+
+    if (blocked === "inline") {
+      set.add("'unsafe-inline'");
+      notes.add(
+        `${directive}: consider a nonce or hash instead of 'unsafe-inline' for inline content.`
+      );
+    } else if (blocked === "eval" || blocked === "wasm-eval") {
+      set.add("'unsafe-eval'");
+      notes.add(
+        `${directive}: 'unsafe-eval' is a broad grant — refactor away from eval()/Function() if possible.`
+      );
+    } else if (blocked === "self") {
+      set.add("'self'");
+    } else if (v.blockedURI) {
+      const origin = originFromUrl(v.blockedURI);
+      if (origin) set.add(origin);
+    }
+  }
+
+  if (map.size === 0) {
+    return (
+      "# No original CSP was captured and no violations have been observed yet —\n" +
+      "# nothing to suggest. Reload the page on the Configuration tab first."
+    );
+  }
+
+  const keys = Array.from(map.keys()).sort((a, b) => {
+    const ai = CSP_DIRECTIVE_ORDER.indexOf(a);
+    const bi = CSP_DIRECTIVE_ORDER.indexOf(b);
+    if (ai === -1 && bi === -1) return a.localeCompare(b);
+    if (ai === -1) return 1;
+    if (bi === -1) return -1;
+    return ai - bi;
+  });
+
+  const lines = keys.map((d) => `${d} ${Array.from(map.get(d)).sort().join(" ")};`);
+  const header = [
+    `# Suggested CSP — generated from ${violations.length} captured violation(s) on ${state.url || "this page"}.`,
+    "# This only reflects what this browsing session happened to trigger — review",
+    "# it against the app's real requirements before using it anywhere."
+  ];
+  const noteLines = Array.from(notes).map((n) => `# ${n}`);
+  return [...header, ...noteLines, "", ...lines].join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Debug summary / JSON / HAR-like export builders
+
+function buildDebugSummary() {
+  const counts = countByCategory(state.logs.violations);
+  const lines = [
+    "CSP Disabler — debug summary",
+    `Generated: ${new Date().toISOString()}`,
+    `Tab URL: ${state.url || "—"}`,
+    `Browser: ${state.detectedBrowserName || "Unknown"} ${state.detectedBrowserVersion || ""}`.trim(),
+    "",
+    "Original CSP (response headers):",
+    state.capturedCspText || "  none captured",
+    "",
+    "Original CSP (<meta> tags):",
+    state.capturedMetaText || "  none captured",
+    "",
+    `CSP violations captured: ${state.logs.violations.length}`
+  ];
+  for (const [key, label] of LOG_CATEGORIES) {
+    if (counts[key] > 0) lines.push(`  ${label}: ${counts[key]}`);
+  }
+  const errCount = state.logs.console.filter((c) => c.level === "error").length;
+  const warnCount = state.logs.console.filter((c) => c.level === "warn").length;
+  lines.push("");
+  lines.push(`Console entries captured: ${state.logs.console.length}`);
+  lines.push(
+    `  errors: ${errCount}, warnings: ${warnCount}, other: ${
+      state.logs.console.length - errCount - warnCount
+    }`
+  );
+  return lines.join("\n");
+}
+
+function currentOriginalCspText() {
+  const parts = [];
+  if (state.capturedCspText) parts.push("Response headers:\n" + state.capturedCspText);
+  if (state.capturedMetaText) parts.push("<meta> tags:\n" + state.capturedMetaText);
+  return parts.length ? parts.join("\n\n") : "No original CSP captured for this tab.";
+}
+
+function buildJsonExport() {
+  return JSON.stringify(
+    {
+      generatedAt: new Date().toISOString(),
+      url: state.url,
+      browser: {
+        name: state.detectedBrowserName,
+        version: state.detectedBrowserVersion
+      },
+      originalCsp: {
+        headers: state.capturedCspText || null,
+        meta: state.capturedMetaText || null
+      },
+      suggestedCsp: buildSuggestedCsp(
+        state.rawCsp || state.rawMeta || "",
+        state.logs.violations
+      ),
+      violations: state.logs.violations,
+      console: state.logs.console
+    },
+    null,
+    2
+  );
+}
+
+function buildHarReport() {
+  const entries = state.logs.violations.map((v) => {
+    const blocked = (v.blockedURI || "").toLowerCase();
+    const isRealUrl = v.blockedURI && !["inline", "eval", "wasm-eval", ""].includes(blocked);
+    return {
+      pageref: "page_1",
+      startedDateTime: new Date(v.time || Date.now()).toISOString(),
+      time: 0,
+      request: {
+        method: "GET",
+        url: isRealUrl ? v.blockedURI : v.documentURI || state.url || "",
+        httpVersion: "HTTP/1.1",
+        cookies: [],
+        headers: [],
+        queryString: [],
+        headersSize: -1,
+        bodySize: -1
+      },
+      response: {
+        status: 0,
+        statusText: "Blocked by Content Security Policy",
+        httpVersion: "HTTP/1.1",
+        cookies: [],
+        headers: [],
+        content: { size: 0, mimeType: "x-unknown" },
+        redirectURL: "",
+        headersSize: -1,
+        bodySize: -1
+      },
+      cache: {},
+      timings: { send: 0, wait: 0, receive: 0 },
+      _csp: {
+        category: categorizeViolation(v),
+        violatedDirective: v.violatedDirective,
+        effectiveDirective: v.effectiveDirective,
+        disposition: v.disposition,
+        sourceFile: v.sourceFile,
+        lineNumber: v.lineNumber,
+        columnNumber: v.columnNumber,
+        blockedURI: v.blockedURI
+      }
+    };
+  });
+
+  return JSON.stringify(
+    {
+      log: {
+        version: "1.2",
+        creator: {
+          name: "CSP Disabler",
+          version: chrome.runtime.getManifest().version
+        },
+        pages: [
+          {
+            startedDateTime: new Date().toISOString(),
+            id: "page_1",
+            title: state.url || "",
+            pageTimings: {}
+          }
+        ],
+        entries
+      }
+    },
+    null,
+    2
+  );
+}
+
+function safeHost() {
+  try {
+    return new URL(state.url).host.replace(/[^a-z0-9.-]/gi, "_") || "page";
+  } catch (e) {
+    return "page";
+  }
+}
+
+async function downloadFile(filename, content, mime, btn) {
+  btn.disabled = true;
+  const reply = await send({ type: "downloadFile", filename, content, mime });
+  btn.disabled = false;
+  flashCopy(btn, reply && reply.ok ? "Saved" : "Failed");
+}
+
+async function onCopyDebugSummary() {
+  await copyText(buildDebugSummary(), els.exportDebugBtn);
+}
+
+async function onCopyOriginalCsp() {
+  await copyText(currentOriginalCspText(), els.exportOriginalCspBtn);
+}
+
+async function onCopySuggestedCsp() {
+  const suggestion = buildSuggestedCsp(
+    state.rawCsp || state.rawMeta || "",
+    state.logs.violations
+  );
+  await copyText(suggestion, els.exportSuggestedCspBtn);
+}
+
+async function onExportJson() {
+  await downloadFile(
+    `csp-debug-${safeHost()}-${Date.now()}.json`,
+    buildJsonExport(),
+    "application/json",
+    els.exportJsonBtn
+  );
+}
+
+async function onExportHar() {
+  await downloadFile(
+    `csp-report-${safeHost()}-${Date.now()}.har`,
+    buildHarReport(),
+    "application/json",
+    els.exportHarBtn
+  );
+}
+
+async function onExportCspLogs() {
+  const data = JSON.stringify(
+    {
+      url: state.url,
+      exportedAt: new Date().toISOString(),
+      violations: state.logs.violations
+    },
+    null,
+    2
+  );
+  await downloadFile(
+    `csp-violations-${safeHost()}-${Date.now()}.json`,
+    data,
+    "application/json",
+    els.exportCspLogsBtn
+  );
+}
+
+async function onExportConsoleLogs() {
+  const data = JSON.stringify(
+    {
+      url: state.url,
+      exportedAt: new Date().toISOString(),
+      console: state.logs.console
+    },
+    null,
+    2
+  );
+  await downloadFile(
+    `console-logs-${safeHost()}-${Date.now()}.json`,
+    data,
+    "application/json",
+    els.exportConsoleLogsBtn
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Init
 
 async function getActiveTab() {
@@ -515,7 +1085,10 @@ async function getActiveTab() {
 
 function wireEvents() {
   for (const t of els.tabs) {
-    t.addEventListener("click", () => selectTab(t.dataset.tab));
+    t.addEventListener("click", () => {
+      selectTab(t.dataset.tab);
+      if (t.dataset.tab === "logs") loadLogs();
+    });
   }
   els.themeBtn.addEventListener("click", toggleTheme);
 
@@ -540,6 +1113,16 @@ function wireEvents() {
   els.policyCopyBtn.addEventListener("click", () =>
     copyText(state.capturedPolicyText, els.policyCopyBtn)
   );
+
+  els.logsRefreshBtn.addEventListener("click", loadLogs);
+  els.logsClearBtn.addEventListener("click", onClearLogsClick);
+  els.exportDebugBtn.addEventListener("click", onCopyDebugSummary);
+  els.exportOriginalCspBtn.addEventListener("click", onCopyOriginalCsp);
+  els.exportSuggestedCspBtn.addEventListener("click", onCopySuggestedCsp);
+  els.exportJsonBtn.addEventListener("click", onExportJson);
+  els.exportHarBtn.addEventListener("click", onExportHar);
+  els.exportCspLogsBtn.addEventListener("click", onExportCspLogs);
+  els.exportConsoleLogsBtn.addEventListener("click", onExportConsoleLogs);
 }
 
 async function init() {
@@ -566,6 +1149,7 @@ async function init() {
   state.tabId = tab.id;
   state.url = tab.url || null;
   await refresh();
+  await loadLogs();
 }
 
 document.addEventListener("DOMContentLoaded", init);

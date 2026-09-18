@@ -1,6 +1,38 @@
 // Runs at document_start on every page. Asks the background worker
 // whether this tab should have a custom CSP injected as a <meta> tag,
-// and if so, prepends it to <head> as early as possible.
+// and if so, prepends it to <head> as early as possible. Also relays CSP
+// violations and page console activity to the background worker for the
+// Logs tab.
+
+document.addEventListener("securitypolicyviolation", (e) => {
+  try {
+    chrome.runtime.sendMessage({
+      type: "cspViolationLog",
+      violation: {
+        time: Date.now(),
+        documentURI: e.documentURI || location.href,
+        blockedURI: e.blockedURI || "",
+        violatedDirective: e.violatedDirective || "",
+        effectiveDirective: e.effectiveDirective || e.violatedDirective || "",
+        disposition: e.disposition || "enforce",
+        sourceFile: e.sourceFile || "",
+        lineNumber: e.lineNumber || 0,
+        columnNumber: e.columnNumber || 0,
+        sample: e.sample || "",
+        statusCode: e.statusCode || 0
+      }
+    }).catch(() => {});
+  } catch (err) {}
+});
+
+window.addEventListener("__csp_disabler_console__", (e) => {
+  try {
+    chrome.runtime.sendMessage({
+      type: "consoleLog",
+      entry: { ...e.detail, documentURI: location.href }
+    }).catch(() => {});
+  } catch (err) {}
+});
 
 (async () => {
   let reply;

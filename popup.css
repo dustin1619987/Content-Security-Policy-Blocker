@@ -594,3 +594,108 @@ main { padding: 12px 14px 14px; }
   line-height: 1.5;
 }
 .warning strong { color: var(--off-strong); }
+
+/* ==========================================================================
+   Logs panel
+   ========================================================================== */
+
+.log-summary-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin: 12px 0;
+}
+
+.log-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+}
+
+.log-chip-label { color: var(--text-soft); }
+.log-chip-count { font-weight: 700; color: var(--text); }
+.log-chip.has-hits .log-chip-count { color: var(--off-strong); }
+
+.log-list {
+  margin: 0;
+  padding: 6px 0;
+  max-height: 180px;
+  overflow: auto;
+  font-size: 11.5px;
+}
+
+.log-list.is-empty {
+  padding: 10px 12px;
+  color: var(--text-mute);
+  font-style: italic;
+}
+
+.log-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 12px;
+  border-bottom: 1px dashed var(--border);
+}
+.log-entry:last-child { border-bottom: none; }
+
+.log-entry-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.log-badge {
+  flex-shrink: 0;
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--off-soft);
+  color: var(--off-strong);
+}
+.log-badge.level-warn { background: var(--accent-soft); color: var(--accent); }
+.log-badge.level-log,
+.log-badge.level-info,
+.log-badge.level-debug {
+  background: var(--bg-soft);
+  color: var(--text-soft);
+  border: 1px solid var(--border);
+}
+
+.log-entry-main {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.log-entry-sub {
+  font-size: 10.5px;
+  color: var(--text-mute);
+  word-break: break-all;
+}
+
+.log-export-head { margin-top: 14px; }
+
+.export-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.export-grid .copy-btn,
+.export-grid .secondary-btn {
+  flex: 1 1 calc(50% - 6px);
+  white-space: normal;
+  line-height: 1.3;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
