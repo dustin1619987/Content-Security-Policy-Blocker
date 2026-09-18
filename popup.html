@@ -40,6 +40,9 @@
     <button class="tab" role="tab" data-tab="policy" aria-selected="false">
       Browser Policy
     </button>
+    <button class="tab" role="tab" data-tab="logs" aria-selected="false">
+      Logs
+    </button>
     <button class="tab" role="tab" data-tab="about" aria-selected="false">
       About
     </button>
@@ -249,6 +252,102 @@ the headers the server sent.</pre>
         any enterprise policy an admin has pushed specifically to this
         extension. Use the button above to open your browser's own policy
         page and inspect the complete list yourself.
+      </div>
+    </section>
+
+    <!-- ==================== Logs ==================== -->
+    <section
+      id="panel-logs"
+      class="panel"
+      role="tabpanel"
+      hidden
+    >
+      <div class="row">
+        <div class="row-text">
+          <div class="row-title">CSP violations &amp; console activity</div>
+          <div class="row-sub" id="logs-summary-sub">
+            No violations captured yet for this tab.
+          </div>
+        </div>
+        <div class="btn-group">
+          <button
+            id="logs-refresh-btn"
+            class="copy-btn"
+            type="button"
+            title="Re-fetch the violations/console entries captured so far for this tab"
+          >
+            Refresh
+          </button>
+          <button
+            id="logs-clear-btn"
+            class="copy-btn"
+            type="button"
+            title="Erase all captured violations/console entries for this tab"
+          >
+            Clear
+          </button>
+        </div>
+      </div>
+
+      <div class="log-summary-grid" id="log-category-grid"></div>
+
+      <div class="csp-block">
+        <div class="csp-block-head">
+          <span class="csp-block-title">Blocked resources</span>
+        </div>
+        <div id="log-violations-list" class="log-list is-empty">
+          No CSP violations captured yet. Reload the page to start
+          capturing.
+        </div>
+      </div>
+
+      <div class="csp-block">
+        <div class="csp-block-head">
+          <span class="csp-block-title">Console activity</span>
+        </div>
+        <div id="log-console-list" class="log-list is-empty">
+          No console activity captured yet.
+        </div>
+      </div>
+
+      <div class="csp-block-head log-export-head">
+        <span class="csp-block-title">Export</span>
+      </div>
+      <div class="export-grid">
+        <button id="export-debug-btn" class="copy-btn" type="button">
+          Copy debug summary
+        </button>
+        <button id="export-original-csp-btn" class="copy-btn" type="button">
+          Copy original CSP
+        </button>
+        <button id="export-suggested-csp-btn" class="copy-btn" type="button">
+          Copy suggested CSP
+        </button>
+        <button id="export-json-btn" class="secondary-btn" type="button">
+          Export JSON
+        </button>
+        <button id="export-har-btn" class="secondary-btn" type="button">
+          Export HAR-like report
+        </button>
+        <button id="export-csp-logs-btn" class="secondary-btn" type="button">
+          Export CSP logs
+        </button>
+        <button id="export-console-logs-btn" class="secondary-btn" type="button">
+          Export console logs
+        </button>
+      </div>
+
+      <div id="export-status" class="hint export-status" hidden></div>
+
+      <div class="hint">
+        Violations are captured live via the browser's own
+        <code>securitypolicyviolation</code> event and a console hook, and
+        reset each time this tab navigates to a new page. Exported files
+        are saved straight to your Downloads folder.
+        <strong>Just installed or updated this extension?</strong> Click the
+        reload icon for it on <code>chrome://extensions</code> (or
+        <code>edge://extensions</code>) and reload this tab — content
+        scripts only attach to pages loaded after that.
       </div>
     </section>
 

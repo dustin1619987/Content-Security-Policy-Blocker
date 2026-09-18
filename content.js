@@ -1,6 +1,10 @@
 // Runs at document_start on every page. Asks the background worker
 // whether this tab should have a custom CSP injected as a <meta> tag,
 // and if so, prepends it to <head> as early as possible.
+//
+// CSP violation / console relaying for the Logs tab lives in
+// log-capture.js instead, since that one needs to run in every frame
+// (all_frames: true) while this meta-injection logic stays top-frame-only.
 
 (async () => {
   let reply;
