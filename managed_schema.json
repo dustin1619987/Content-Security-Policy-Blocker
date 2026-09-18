@@ -1,7 +1,10 @@
 {
   "type": "object",
-  "properties": {},
-  "additionalProperties": {
-    "type": "string"
+  "properties": {
+    "note": {
+      "type": "string",
+      "title": "Administrator note",
+      "description": "Free-form note pushed by an administrator, shown in this extension's Browser Policy tab."
+    }
   }
 }
