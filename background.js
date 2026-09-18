@@ -548,15 +548,38 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
       if (msg.type === "downloadFile") {
         try {
+          if (!chrome.downloads || typeof chrome.downloads.download !== "function") {
+            sendResponse({
+              error:
+                "chrome.downloads is unavailable. This extension was updated to " +
+                "need the \"downloads\" permission — reload it from " +
+                "chrome://extensions (or edge://extensions), then try again."
+            });
+            return;
+          }
           const blob = new Blob([msg.content || ""], {
             type: msg.mime || "application/json"
           });
           const url = URL.createObjectURL(blob);
-          const downloadId = await chrome.downloads.download({
-            url,
-            filename: msg.filename || "export.json",
-            saveAs: false
-          });
+          let downloadId;
+          try {
+            downloadId = await chrome.downloads.download({
+              url,
+              filename: msg.filename || "export.json",
+              saveAs: false
+            });
+          } catch (downloadErr) {
+            URL.revokeObjectURL(url);
+            throw downloadErr;
+          }
+          if (typeof downloadId !== "number") {
+            URL.revokeObjectURL(url);
+            const lastError = chrome.runtime.lastError;
+            sendResponse({
+              error: lastError ? lastError.message : "Download did not start."
+            });
+            return;
+          }
           setTimeout(() => URL.revokeObjectURL(url), 30000);
           sendResponse({ ok: true, downloadId });
         } catch (e) {
@@ -643,6 +666,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   })();
   return true;
 });
+
+// Surfaces a download that started successfully but was later interrupted
+// (e.g. blocked by an enterprise download policy) in this service
+// worker's own console — inspectable from chrome://extensions.
+if (chrome.downloads && chrome.downloads.onChanged) {
+  chrome.downloads.onChanged.addListener((delta) => {
+    if (delta.state && delta.state.current === "interrupted") {
+      console.warn("CSP Disabler: export download was interrupted", delta);
+    }
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Lifecycle

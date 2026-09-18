@@ -270,10 +270,20 @@ the headers the server sent.</pre>
           </div>
         </div>
         <div class="btn-group">
-          <button id="logs-refresh-btn" class="copy-btn" type="button">
+          <button
+            id="logs-refresh-btn"
+            class="copy-btn"
+            type="button"
+            title="Re-fetch the violations/console entries captured so far for this tab"
+          >
             Refresh
           </button>
-          <button id="logs-clear-btn" class="copy-btn" type="button">
+          <button
+            id="logs-clear-btn"
+            class="copy-btn"
+            type="button"
+            title="Erase all captured violations/console entries for this tab"
+          >
             Clear
           </button>
         </div>
@@ -327,11 +337,17 @@ the headers the server sent.</pre>
         </button>
       </div>
 
+      <div id="export-status" class="hint export-status" hidden></div>
+
       <div class="hint">
         Violations are captured live via the browser's own
         <code>securitypolicyviolation</code> event and a console hook, and
         reset each time this tab navigates to a new page. Exported files
         are saved straight to your Downloads folder.
+        <strong>Just installed or updated this extension?</strong> Click the
+        reload icon for it on <code>chrome://extensions</code> (or
+        <code>edge://extensions</code>) and reload this tab — content
+        scripts only attach to pages loaded after that.
       </div>
     </section>
 

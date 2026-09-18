@@ -65,6 +65,7 @@ const els = {
   exportHarBtn: document.getElementById("export-har-btn"),
   exportCspLogsBtn: document.getElementById("export-csp-logs-btn"),
   exportConsoleLogsBtn: document.getElementById("export-console-logs-btn"),
+  exportStatus: document.getElementById("export-status"),
 
   // About
   aboutVersion: document.getElementById("about-version")
@@ -995,11 +996,30 @@ function safeHost() {
   }
 }
 
+function setExportStatus(message) {
+  if (!message) {
+    els.exportStatus.hidden = true;
+    els.exportStatus.textContent = "";
+    return;
+  }
+  els.exportStatus.hidden = false;
+  els.exportStatus.textContent = `Export failed: ${message}`;
+}
+
 async function downloadFile(filename, content, mime, btn) {
   btn.disabled = true;
   const reply = await send({ type: "downloadFile", filename, content, mime });
   btn.disabled = false;
-  flashCopy(btn, reply && reply.ok ? "Saved" : "Failed");
+  if (reply && reply.ok) {
+    flashCopy(btn, "Saved");
+    setExportStatus("");
+  } else {
+    flashCopy(btn, "Failed");
+    setExportStatus(
+      (reply && reply.error) ||
+        "No response from the extension's background worker."
+    );
+  }
 }
 
 async function onCopyDebugSummary() {

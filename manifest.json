@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Disable Content-Security-Policy",
-  "version": "1.8.0",
+  "version": "1.8.1",
   "description": "Toggle the Content-Security-Policy header for the current tab. Inspect the original CSP, inject a custom one, view browser/policy info, track blocked resources and console activity, and switch between light/dark themes.",
   "minimum_chrome_version": "121",
   "permissions": [
@@ -26,8 +26,14 @@
       "matches": ["<all_urls>"],
       "js": ["console-capture.js"],
       "run_at": "document_start",
-      "all_frames": false,
+      "all_frames": true,
       "world": "MAIN"
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["log-capture.js"],
+      "run_at": "document_start",
+      "all_frames": true
     },
     {
       "matches": ["<all_urls>"],

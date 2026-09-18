@@ -691,6 +691,14 @@ main { padding: 12px 14px 14px; }
   gap: 6px;
   margin-top: 8px;
 }
+.export-status {
+  margin-top: 8px;
+  border: 1px solid color-mix(in srgb, var(--off) 25%, transparent);
+  background: var(--off-soft);
+  color: var(--off-strong);
+  font-weight: 600;
+}
+
 .export-grid .copy-btn,
 .export-grid .secondary-btn {
   flex: 1 1 calc(50% - 6px);
