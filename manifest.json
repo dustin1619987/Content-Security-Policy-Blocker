@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Disable Content-Security-Policy",
-  "version": "1.6.0",
-  "description": "Toggle the Content-Security-Policy header for the current tab. Inspect the original CSP, inject a custom one, and switch between light/dark themes.",
+  "version": "1.7.0",
+  "description": "Toggle the Content-Security-Policy header for the current tab. Inspect the original CSP, inject a custom one, view browser/policy info, and switch between light/dark themes.",
   "minimum_chrome_version": "121",
   "permissions": [
     "declarativeNetRequest",
@@ -14,6 +14,9 @@
   "host_permissions": [
     "<all_urls>"
   ],
+  "storage": {
+    "managed_schema": "managed_schema.json"
+  },
   "background": {
     "service_worker": "background.js"
   },

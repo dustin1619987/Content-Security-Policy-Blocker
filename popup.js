@@ -10,6 +10,7 @@ const els = {
   panels: {
     config: document.getElementById("panel-config"),
     custom: document.getElementById("panel-custom"),
+    policy: document.getElementById("panel-policy"),
     about: document.getElementById("panel-about")
   },
 
@@ -36,6 +37,19 @@ const els = {
   applyBtn: document.getElementById("apply-btn"),
   resetBtn: document.getElementById("reset-btn"),
 
+  // Browser Policy tab
+  policyBrowserName: document.getElementById("policy-browser-name"),
+  policyBrowserVersion: document.getElementById("policy-browser-version"),
+  policyOs: document.getElementById("policy-os"),
+  policyArch: document.getElementById("policy-arch"),
+  policyUa: document.getElementById("policy-ua"),
+  policyInstallType: document.getElementById("policy-install-type"),
+  policyManagementNote: document.getElementById("policy-management-note"),
+  policyManagedPre: document.getElementById("policy-managed-pre"),
+  policyRefreshBtn: document.getElementById("policy-refresh-btn"),
+  policyCopyBtn: document.getElementById("policy-copy-btn"),
+  policyOpenBtn: document.getElementById("policy-open-btn"),
+
   // About
   aboutVersion: document.getElementById("about-version")
 };
@@ -48,7 +62,8 @@ const state = {
   inject: { enabled: false, value: "", mode: "header" },
   capturedCspText: "",
   capturedMetaText: "",
-  capturedUrl: ""
+  capturedUrl: "",
+  capturedPolicyText: ""
 };
 
 // ---------------------------------------------------------------------------
@@ -324,6 +339,158 @@ function buildCurlCommand() {
 }
 
 // ---------------------------------------------------------------------------
+// Browser Policy tab
+//
+// Extensions cannot read chrome://policy/ itself — chrome:// pages are off
+// limits to content scripts and the scripting API. Everything here is
+// gathered from APIs an extension is actually allowed to call.
+
+function guessBrowserFromUa(ua) {
+  if (/Edg\//.test(ua)) return { name: "Microsoft Edge", match: /Edg\/([\d.]+)/ };
+  if (/OPR\//.test(ua)) return { name: "Opera", match: /OPR\/([\d.]+)/ };
+  if (/Vivaldi\//.test(ua)) return { name: "Vivaldi", match: /Vivaldi\/([\d.]+)/ };
+  if (/Brave\//.test(ua)) return { name: "Brave", match: /Brave\/([\d.]+)/ };
+  if (/Chrome\//.test(ua)) return { name: "Google Chrome", match: /Chrome\/([\d.]+)/ };
+  return { name: "Chromium-based browser", match: null };
+}
+
+async function detectBrowser() {
+  const ua = navigator.userAgent;
+  let brands = [];
+  let uaData = null;
+  try {
+    if (navigator.userAgentData) {
+      uaData = await navigator.userAgentData.getHighEntropyValues([
+        "platform",
+        "platformVersion",
+        "architecture",
+        "bitness",
+        "fullVersionList"
+      ]);
+      const list = uaData.fullVersionList || navigator.userAgentData.brands || [];
+      brands = list
+        .map((b) => ({ brand: b.brand, version: b.version }))
+        .filter((b) => !/Not.*Brand/i.test(b.brand));
+    }
+  } catch (e) {}
+
+  const preferredOrder = [
+    "Microsoft Edge",
+    "Opera",
+    "Vivaldi",
+    "Brave",
+    "Google Chrome",
+    "Chromium"
+  ];
+  let name = null;
+  let version = null;
+  for (const pref of preferredOrder) {
+    const hit = brands.find((b) => b.brand === pref);
+    if (hit) {
+      name = hit.brand;
+      version = hit.version;
+      break;
+    }
+  }
+  if (!name) {
+    const fallback = guessBrowserFromUa(ua);
+    name = fallback.name;
+    if (fallback.match) {
+      const m = ua.match(fallback.match);
+      version = m ? m[1] : null;
+    }
+  }
+
+  let os = null;
+  let arch = uaData && uaData.architecture ? uaData.architecture : null;
+  try {
+    const platformInfo = await chrome.runtime.getPlatformInfo();
+    os = platformInfo.os;
+    if (!arch) arch = platformInfo.arch;
+  } catch (e) {}
+
+  return { name, version, os, arch, ua };
+}
+
+function renderPolicyBrowser(info) {
+  els.policyBrowserName.textContent = info.name || "Unknown";
+  els.policyBrowserVersion.textContent = info.version || "Unknown";
+  els.policyOs.textContent = info.os || "Unknown";
+  els.policyArch.textContent = info.arch || "Unknown";
+  els.policyUa.textContent = info.ua;
+}
+
+async function loadInstallType() {
+  try {
+    const self = await chrome.management.getSelf();
+    return self.installType || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function renderPolicyManagement(installType) {
+  const labels = {
+    admin: "Installed by enterprise policy",
+    development: "Loaded unpacked (development)",
+    normal: "Installed from the Web Store",
+    sideload: "Sideloaded",
+    other: "Other"
+  };
+  els.policyInstallType.textContent = labels[installType] || "Unknown";
+  els.policyManagementNote.textContent =
+    installType === "admin"
+      ? "This extension was force-installed and is centrally managed by an enterprise policy on this browser."
+      : "This extension is not centrally managed — it was not installed by an enterprise policy.";
+}
+
+async function loadManagedPolicy() {
+  try {
+    const data = await chrome.storage.managed.get(null);
+    return data || {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function renderManagedPolicy(data) {
+  const keys = Object.keys(data || {});
+  if (keys.length === 0) {
+    els.policyManagedPre.textContent =
+      "No enterprise policy values are configured for this extension.\n\n" +
+      "An administrator can push key/value policy here via the standard " +
+      "Chrome \"3rd-party extension\" ExtensionSettings policy, using this " +
+      "extension's ID and the schema in managed_schema.json.";
+    els.policyManagedPre.classList.add("is-empty");
+    els.policyCopyBtn.disabled = true;
+    state.capturedPolicyText = "";
+    return;
+  }
+  els.policyManagedPre.classList.remove("is-empty");
+  const text = JSON.stringify(data, null, 2);
+  els.policyManagedPre.textContent = text;
+  state.capturedPolicyText = text;
+  els.policyCopyBtn.disabled = false;
+}
+
+async function refreshBrowserPolicy() {
+  els.policyRefreshBtn.disabled = true;
+  const [browserInfo, installType, managed] = await Promise.all([
+    detectBrowser(),
+    loadInstallType(),
+    loadManagedPolicy()
+  ]);
+  renderPolicyBrowser(browserInfo);
+  renderPolicyManagement(installType);
+  renderManagedPolicy(managed);
+  els.policyRefreshBtn.disabled = false;
+}
+
+function openPolicyPage() {
+  chrome.tabs.create({ url: "chrome://policy/" });
+}
+
+// ---------------------------------------------------------------------------
 // Init
 
 async function getActiveTab() {
@@ -355,11 +522,18 @@ function wireEvents() {
   els.copyMetaBtn.addEventListener("click", () =>
     copyText(state.capturedMetaText, els.copyMetaBtn)
   );
+
+  els.policyRefreshBtn.addEventListener("click", refreshBrowserPolicy);
+  els.policyOpenBtn.addEventListener("click", openPolicyPage);
+  els.policyCopyBtn.addEventListener("click", () =>
+    copyText(state.capturedPolicyText, els.policyCopyBtn)
+  );
 }
 
 async function init() {
   els.aboutVersion.textContent = chrome.runtime.getManifest().version;
   wireEvents();
+  refreshBrowserPolicy();
 
   // Apply theme as early as possible to avoid a flash.
   try {
