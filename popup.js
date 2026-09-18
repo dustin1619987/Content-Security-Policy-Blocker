@@ -67,6 +67,14 @@ const els = {
   exportConsoleLogsBtn: document.getElementById("export-console-logs-btn"),
   exportStatus: document.getElementById("export-status"),
 
+  swList: document.getElementById("sw-list"),
+  swRefreshBtn: document.getElementById("sw-refresh-btn"),
+  swCopyBtn: document.getElementById("sw-copy-btn"),
+  swAddUrl: document.getElementById("sw-add-url"),
+  swAddScope: document.getElementById("sw-add-scope"),
+  swAddBtn: document.getElementById("sw-add-btn"),
+  swStatus: document.getElementById("sw-status"),
+
   // About
   aboutVersion: document.getElementById("about-version")
 };
@@ -85,7 +93,9 @@ const state = {
   detectedBrowserVersion: null,
   rawCsp: "",
   rawMeta: "",
-  logs: { violations: [], console: [] }
+  logs: { violations: [], console: [] },
+  serviceWorkers: { supported: false, url: null, registrations: [] },
+  capturedSwText: ""
 };
 
 // ---------------------------------------------------------------------------
@@ -743,6 +753,165 @@ async function onClearLogsClick() {
 }
 
 // ---------------------------------------------------------------------------
+// Service workers
+//
+// Queried/registered/unregistered by running a small function in the
+// tab's own page (see background.js) — navigator.serviceWorker is scoped
+// to that page's origin, not the extension's.
+
+function swStateLabel(name, info) {
+  if (!info) return null;
+  return `${name}: ${info.scriptURL} (${info.state})`;
+}
+
+function buildSwSummaryText() {
+  const { supported, url, registrations } = state.serviceWorkers;
+  if (!supported) {
+    return `Service workers are not supported/inspectable on this page (${url || state.url || "unknown"}).`;
+  }
+  if (!registrations.length) {
+    return `No service workers registered for ${url || state.url || "this page"}.`;
+  }
+  const lines = [`Service workers for ${url || state.url || "this page"}:`, ""];
+  for (const r of registrations) {
+    lines.push(`Scope: ${r.scope}`);
+    for (const [name, info] of [
+      ["active", r.active],
+      ["waiting", r.waiting],
+      ["installing", r.installing]
+    ]) {
+      const label = swStateLabel(name, info);
+      if (label) lines.push(`  ${label}`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n").trim();
+}
+
+function setSwStatus(message, isError) {
+  if (!message) {
+    els.swStatus.hidden = true;
+    els.swStatus.textContent = "";
+    return;
+  }
+  els.swStatus.hidden = false;
+  els.swStatus.classList.toggle("export-status", Boolean(isError));
+  els.swStatus.textContent = message;
+}
+
+function renderServiceWorkers(info) {
+  state.serviceWorkers = info;
+  state.capturedSwText = buildSwSummaryText();
+  els.swCopyBtn.disabled = false;
+
+  const el = els.swList;
+  el.textContent = "";
+
+  if (!info.supported) {
+    el.classList.add("is-empty");
+    el.textContent = info.error
+      ? `Couldn't check for service workers: ${info.error}`
+      : "Service workers aren't supported/inspectable on this page.";
+    return;
+  }
+
+  if (!info.registrations.length) {
+    el.classList.add("is-empty");
+    el.textContent = "No service workers registered for this page.";
+    return;
+  }
+
+  el.classList.remove("is-empty");
+  for (const r of info.registrations) {
+    const entry = document.createElement("div");
+    entry.className = "log-entry";
+
+    const head = document.createElement("div");
+    head.className = "log-entry-main";
+    head.textContent = truncate(r.scope, 90);
+    entry.appendChild(head);
+
+    for (const [name, swInfo] of [
+      ["active", r.active],
+      ["waiting", r.waiting],
+      ["installing", r.installing]
+    ]) {
+      if (!swInfo) continue;
+      const sub = document.createElement("div");
+      sub.className = "log-entry-sub";
+      sub.textContent = `${name}: ${truncate(swInfo.scriptURL, 70)} (${swInfo.state})`;
+      entry.appendChild(sub);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "sw-entry-actions";
+    const unregisterBtn = document.createElement("button");
+    unregisterBtn.type = "button";
+    unregisterBtn.className = "copy-btn";
+    unregisterBtn.textContent = "Unregister";
+    unregisterBtn.addEventListener("click", () => onUnregisterServiceWorker(r.scope, unregisterBtn));
+    actions.appendChild(unregisterBtn);
+    entry.appendChild(actions);
+
+    el.appendChild(entry);
+  }
+}
+
+async function loadServiceWorkers() {
+  if (state.tabId == null) return;
+  const reply = await send({ type: "getServiceWorkers", tabId: state.tabId });
+  renderServiceWorkers(
+    reply && typeof reply === "object"
+      ? reply
+      : { supported: false, url: null, registrations: [] }
+  );
+}
+
+async function onRegisterServiceWorker() {
+  if (state.tabId == null) return;
+  const scriptUrl = els.swAddUrl.value.trim();
+  const scope = els.swAddScope.value.trim();
+  if (!scriptUrl) {
+    els.swAddUrl.focus();
+    return;
+  }
+  els.swAddBtn.disabled = true;
+  setSwStatus("");
+  const reply = await send({
+    type: "registerServiceWorker",
+    tabId: state.tabId,
+    scriptUrl,
+    scope
+  });
+  els.swAddBtn.disabled = false;
+  if (reply && reply.ok) {
+    els.swAddUrl.value = "";
+    els.swAddScope.value = "";
+    setSwStatus(`Registered with scope ${reply.scope}.`, false);
+    await loadServiceWorkers();
+  } else {
+    setSwStatus((reply && reply.error) || "Registration failed.", true);
+  }
+}
+
+async function onUnregisterServiceWorker(scope, btn) {
+  if (state.tabId == null) return;
+  btn.disabled = true;
+  setSwStatus("");
+  const reply = await send({
+    type: "unregisterServiceWorker",
+    tabId: state.tabId,
+    scope
+  });
+  if (reply && reply.ok) {
+    await loadServiceWorkers();
+  } else {
+    btn.disabled = false;
+    setSwStatus((reply && reply.error) || "Unregister failed.", true);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Suggested CSP generator
 //
 // Parses the original policy (if any), then widens each directive just
@@ -1107,7 +1276,10 @@ function wireEvents() {
   for (const t of els.tabs) {
     t.addEventListener("click", () => {
       selectTab(t.dataset.tab);
-      if (t.dataset.tab === "logs") loadLogs();
+      if (t.dataset.tab === "logs") {
+        loadLogs();
+        loadServiceWorkers();
+      }
     });
   }
   els.themeBtn.addEventListener("click", toggleTheme);
@@ -1143,6 +1315,12 @@ function wireEvents() {
   els.exportHarBtn.addEventListener("click", onExportHar);
   els.exportCspLogsBtn.addEventListener("click", onExportCspLogs);
   els.exportConsoleLogsBtn.addEventListener("click", onExportConsoleLogs);
+
+  els.swRefreshBtn.addEventListener("click", loadServiceWorkers);
+  els.swCopyBtn.addEventListener("click", () =>
+    copyText(state.capturedSwText, els.swCopyBtn)
+  );
+  els.swAddBtn.addEventListener("click", onRegisterServiceWorker);
 }
 
 async function init() {
@@ -1170,6 +1348,7 @@ async function init() {
   state.url = tab.url || null;
   await refresh();
   await loadLogs();
+  await loadServiceWorkers();
 }
 
 document.addEventListener("DOMContentLoaded", init);

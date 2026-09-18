@@ -310,6 +310,44 @@ the headers the server sent.</pre>
         </div>
       </div>
 
+      <div class="csp-block">
+        <div class="csp-block-head">
+          <span class="csp-block-title">Service workers</span>
+          <div class="btn-group">
+            <button id="sw-refresh-btn" class="copy-btn" type="button">
+              Refresh
+            </button>
+            <button id="sw-copy-btn" class="copy-btn" type="button" disabled>
+              Copy
+            </button>
+          </div>
+        </div>
+        <div id="sw-list" class="log-list is-empty">
+          Checking for service workers…
+        </div>
+
+        <div class="sw-add-row">
+          <input
+            id="sw-add-url"
+            class="sw-input"
+            type="text"
+            placeholder="/service-worker.js or full URL"
+            spellcheck="false"
+          />
+          <input
+            id="sw-add-scope"
+            class="sw-input sw-input-scope"
+            type="text"
+            placeholder="Scope (optional)"
+            spellcheck="false"
+          />
+          <button id="sw-add-btn" class="secondary-btn" type="button">
+            Register
+          </button>
+        </div>
+        <div id="sw-status" class="hint export-status" hidden></div>
+      </div>
+
       <div class="csp-block-head log-export-head">
         <span class="csp-block-title">Export</span>
       </div>

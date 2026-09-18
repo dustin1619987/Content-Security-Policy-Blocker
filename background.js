@@ -413,6 +413,125 @@ async function getMetaForTab(tabId) {
 }
 
 // ---------------------------------------------------------------------------
+// Service workers
+//
+// Queried/registered/unregistered on demand by running a small function
+// in the tab's own page context via chrome.scripting.executeScript —
+// navigator.serviceWorker is scoped to the page's origin, so this can't
+// be done from the extension's own background/popup pages.
+
+async function getServiceWorkersForTab(tabId) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: async () => {
+        if (!("serviceWorker" in navigator)) {
+          return { supported: false, url: location.href, registrations: [] };
+        }
+        const toInfo = (sw) =>
+          sw ? { scriptURL: sw.scriptURL, state: sw.state } : null;
+        const regs = await navigator.serviceWorker.getRegistrations();
+        return {
+          supported: true,
+          url: location.href,
+          registrations: regs.map((r) => ({
+            scope: r.scope,
+            updateViaCache: r.updateViaCache,
+            active: toInfo(r.active),
+            waiting: toInfo(r.waiting),
+            installing: toInfo(r.installing)
+          }))
+        };
+      }
+    });
+    return (
+      (results && results[0] && results[0].result) || {
+        supported: false,
+        url: null,
+        registrations: []
+      }
+    );
+  } catch (e) {
+    return {
+      supported: false,
+      url: null,
+      registrations: [],
+      error: String(e && e.message ? e.message : e)
+    };
+  }
+}
+
+async function registerServiceWorkerInTab(tabId, scriptUrl, scope) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: async (rawUrl, rawScope) => {
+        if (!("serviceWorker" in navigator)) {
+          return {
+            ok: false,
+            error: "Service workers aren't supported on this page."
+          };
+        }
+        try {
+          const resolvedUrl = new URL(rawUrl, location.href).href;
+          const options = {};
+          if (rawScope) options.scope = new URL(rawScope, location.href).href;
+          const reg = await navigator.serviceWorker.register(resolvedUrl, options);
+          return { ok: true, scope: reg.scope };
+        } catch (e) {
+          return { ok: false, error: String(e && e.message ? e.message : e) };
+        }
+      },
+      args: [scriptUrl, scope || ""]
+    });
+    return (
+      (results && results[0] && results[0].result) || {
+        ok: false,
+        error: "No response from the page."
+      }
+    );
+  } catch (e) {
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
+}
+
+async function unregisterServiceWorkerInTab(tabId, scope) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: async (targetScope) => {
+        if (!("serviceWorker" in navigator)) {
+          return {
+            ok: false,
+            error: "Service workers aren't supported on this page."
+          };
+        }
+        try {
+          const regs = await navigator.serviceWorker.getRegistrations();
+          const match = regs.find((r) => r.scope === targetScope);
+          if (!match) {
+            return { ok: false, error: "That registration no longer exists." };
+          }
+          const ok = await match.unregister();
+          return { ok };
+        } catch (e) {
+          return { ok: false, error: String(e && e.message ? e.message : e) };
+        }
+      },
+      args: [scope]
+    });
+    return (
+      (results && results[0] && results[0].result) || {
+        ok: false,
+        error: "No response from the page."
+      }
+    );
+  } catch (e) {
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Logs (CSP violations + page console activity)
 //
 // logsByTab : Map<tabId, { violations: [], console: [] }>
@@ -522,6 +641,9 @@ function toDataUrl(content, mime) {
 //   { type: "getLogs",     tabId }                        → { violations, console }
 //   { type: "clearLogs",   tabId }                        → { ok }
 //   { type: "downloadFile", filename, content, mime }     → { ok, downloadId }
+//   { type: "getServiceWorkers", tabId }                  → { supported, url, registrations }
+//   { type: "registerServiceWorker", tabId, scriptUrl, scope } → { ok, scope? , error? }
+//   { type: "unregisterServiceWorker", tabId, scope }     → { ok, error? }
 //
 // Content script → background:
 //   { type: "getMetaInject" }              → { metaCsp: string | null }
@@ -650,6 +772,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (msg.type === "clearLogs") {
         await clearLogs(tabId);
         sendResponse({ ok: true });
+        return;
+      }
+
+      if (msg.type === "getServiceWorkers") {
+        sendResponse(await getServiceWorkersForTab(tabId));
+        return;
+      }
+
+      if (msg.type === "registerServiceWorker") {
+        sendResponse(
+          await registerServiceWorkerInTab(tabId, msg.scriptUrl || "", msg.scope || "")
+        );
+        return;
+      }
+
+      if (msg.type === "unregisterServiceWorker") {
+        sendResponse(await unregisterServiceWorkerInTab(tabId, msg.scope || ""));
         return;
       }
 
