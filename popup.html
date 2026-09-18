@@ -37,6 +37,9 @@
     <button class="tab" role="tab" data-tab="custom" aria-selected="false">
       Custom CSP
     </button>
+    <button class="tab" role="tab" data-tab="policy" aria-selected="false">
+      Browser Policy
+    </button>
     <button class="tab" role="tab" data-tab="about" aria-selected="false">
       About
     </button>
@@ -166,6 +169,86 @@ the headers the server sent.</pre>
       <div class="hint">
         Tip: enable <strong>Strip CSP</strong> on the Configuration tab too
         if you want a clean slate before injecting via &lt;meta&gt;.
+      </div>
+    </section>
+
+    <!-- ==================== Browser Policy ==================== -->
+    <section
+      id="panel-policy"
+      class="panel"
+      role="tabpanel"
+      hidden
+    >
+      <div class="about-card">
+        <h2 class="about-title">Browser identification</h2>
+        <dl class="about-list" id="policy-browser-list">
+          <div class="about-row">
+            <dt>Browser</dt>
+            <dd id="policy-browser-name">—</dd>
+          </div>
+          <div class="about-row">
+            <dt>Browser version</dt>
+            <dd id="policy-browser-version">—</dd>
+          </div>
+          <div class="about-row">
+            <dt>Operating system</dt>
+            <dd id="policy-os">—</dd>
+          </div>
+          <div class="about-row">
+            <dt>CPU architecture</dt>
+            <dd id="policy-arch">—</dd>
+          </div>
+        </dl>
+        <div class="csp-block">
+          <div class="csp-block-head">
+            <span class="csp-block-title">Full user-agent string</span>
+          </div>
+          <pre id="policy-ua" class="csp-pre">—</pre>
+        </div>
+      </div>
+
+      <div class="about-card">
+        <h2 class="about-title">Extension management</h2>
+        <dl class="about-list">
+          <div class="about-row">
+            <dt>Install type</dt>
+            <dd id="policy-install-type">—</dd>
+          </div>
+        </dl>
+        <div class="hint" id="policy-management-note">
+          Checking how this extension was installed…
+        </div>
+      </div>
+
+      <div class="csp-block">
+        <div class="csp-block-head">
+          <span class="csp-block-title">Enterprise policy pushed to this extension</span>
+          <div class="btn-group">
+            <button id="policy-refresh-btn" class="copy-btn" type="button">
+              Refresh
+            </button>
+            <button id="policy-copy-btn" class="copy-btn" type="button" disabled>
+              Copy
+            </button>
+          </div>
+        </div>
+        <pre id="policy-managed-pre" class="csp-pre is-empty">Checking for managed policy…</pre>
+      </div>
+
+      <div class="form-actions">
+        <button id="policy-open-btn" class="secondary-btn" type="button">
+          Browser Policy
+        </button>
+      </div>
+
+      <div class="hint">
+        Browser extensions cannot read the browser's full policy list —
+        the internal policy page is off-limits to extension code. This
+        tab shows everything an extension is actually allowed to see: the
+        detected browser/OS, how this extension itself was installed, and
+        any enterprise policy an admin has pushed specifically to this
+        extension. Use the button above to open your browser's own policy
+        page and inspect the complete list yourself.
       </div>
     </section>
 
