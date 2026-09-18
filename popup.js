@@ -63,7 +63,8 @@ const state = {
   capturedCspText: "",
   capturedMetaText: "",
   capturedUrl: "",
-  capturedPolicyText: ""
+  capturedPolicyText: "",
+  detectedBrowserName: null
 };
 
 // ---------------------------------------------------------------------------
@@ -413,6 +414,7 @@ async function detectBrowser() {
 }
 
 function renderPolicyBrowser(info) {
+  state.detectedBrowserName = info.name || null;
   els.policyBrowserName.textContent = info.name || "Unknown";
   els.policyBrowserVersion.textContent = info.version || "Unknown";
   els.policyOs.textContent = info.os || "Unknown";
@@ -486,8 +488,18 @@ async function refreshBrowserPolicy() {
   els.policyRefreshBtn.disabled = false;
 }
 
+const POLICY_URL_BY_BROWSER = {
+  "Microsoft Edge": "edge://policy/",
+  Opera: "opera://policy/",
+  Vivaldi: "vivaldi://policy/",
+  Brave: "brave://policy/",
+  "Google Chrome": "chrome://policy/",
+  Chromium: "chrome://policy/"
+};
+
 function openPolicyPage() {
-  chrome.tabs.create({ url: "chrome://policy/" });
+  const url = POLICY_URL_BY_BROWSER[state.detectedBrowserName] || "chrome://policy/";
+  chrome.tabs.create({ url });
 }
 
 // ---------------------------------------------------------------------------
