@@ -494,6 +494,23 @@ async function setTheme(theme) {
 }
 
 // ---------------------------------------------------------------------------
+// data: URL encoding for downloads
+//
+// chrome.downloads.download() needs a URL it can fetch. Blob object URLs
+// (URL.createObjectURL) aren't available in every MV3 service worker
+// build, so exports are encoded as data: URLs instead — self-contained,
+// no cleanup required.
+
+function toDataUrl(content, mime) {
+  const bytes = new TextEncoder().encode(content);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return `data:${mime};base64,${btoa(binary)}`;
+}
+
+// ---------------------------------------------------------------------------
 // Message handlers
 //
 // Popup → background:
@@ -557,30 +574,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             });
             return;
           }
-          const blob = new Blob([msg.content || ""], {
-            type: msg.mime || "application/json"
+          // MV3 service workers don't support Blob object URLs
+          // (URL.createObjectURL doesn't exist there), so encode the
+          // content as a data: URL instead — no cleanup needed either.
+          const downloadId = await chrome.downloads.download({
+            url: toDataUrl(msg.content || "", msg.mime || "application/json"),
+            filename: msg.filename || "export.json",
+            saveAs: false
           });
-          const url = URL.createObjectURL(blob);
-          let downloadId;
-          try {
-            downloadId = await chrome.downloads.download({
-              url,
-              filename: msg.filename || "export.json",
-              saveAs: false
-            });
-          } catch (downloadErr) {
-            URL.revokeObjectURL(url);
-            throw downloadErr;
-          }
           if (typeof downloadId !== "number") {
-            URL.revokeObjectURL(url);
             const lastError = chrome.runtime.lastError;
             sendResponse({
               error: lastError ? lastError.message : "Download did not start."
             });
             return;
           }
-          setTimeout(() => URL.revokeObjectURL(url), 30000);
           sendResponse({ ok: true, downloadId });
         } catch (e) {
           sendResponse({ error: String(e && e.message ? e.message : e) });
