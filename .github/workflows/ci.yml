@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Check JavaScript syntax
+        run: |
+          set -e
+          for f in $(find . -name "*.js" -not -path "./node_modules/*"); do
+            echo "Checking $f"
+            node --check "$f"
+          done
+
+      - name: Validate JSON files
+        run: |
+          set -e
+          for f in manifest.json managed_schema.json; do
+            if [ -f "$f" ]; then
+              echo "Validating $f"
+              node -e "JSON.parse(require('fs').readFileSync('$f'))"
+            fi
+          done
+
+      - name: Check manifest.json content_scripts reference existing files
+        run: |
+          node -e '
+            const fs = require("fs");
+            const manifest = JSON.parse(fs.readFileSync("manifest.json"));
+            let ok = true;
+            for (const cs of manifest.content_scripts || []) {
+              for (const f of cs.js || []) {
+                if (!fs.existsSync(f)) {
+                  console.error(`Missing content script file referenced in manifest.json: ${f}`);
+                  ok = false;
+                }
+              }
+            }
+            for (const key of ["16", "32", "48", "128"]) {
+              const iconPath = manifest.icons && manifest.icons[key];
+              if (iconPath && !fs.existsSync(iconPath)) {
+                console.error(`Missing icon file referenced in manifest.json: ${iconPath}`);
+                ok = false;
+              }
+            }
+            if (!ok) process.exit(1);
+            console.log("manifest.json file references OK");
+          '
+
+      - name: Check popup.html tag balance
+        run: |
+          node -e '
+            const fs = require("fs");
+            const html = fs.readFileSync("popup.html", "utf8");
+            const pairs = [
+              ["section", /<section\b/g, /<\/section>/g],
+              ["div", /<div\b/g, /<\/div>/g],
+              ["button", /<button\b/g, /<\/button>/g],
+              ["select", /<select\b/g, /<\/select>/g],
+              ["textarea", /<textarea\b/g, /<\/textarea>/g],
+              ["label", /<label\b/g, /<\/label>/g]
+            ];
+            let ok = true;
+            for (const [name, open, close] of pairs) {
+              const openCount = (html.match(open) || []).length;
+              const closeCount = (html.match(close) || []).length;
+              if (openCount !== closeCount) {
+                console.error(`Unbalanced <${name}> tags: ${openCount} open vs ${closeCount} close`);
+                ok = false;
+              }
+            }
+            if (!ok) process.exit(1);
+            console.log("popup.html tag balance OK");
+          '
