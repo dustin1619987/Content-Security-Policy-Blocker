@@ -43,6 +43,9 @@
     <button class="tab" role="tab" data-tab="logs" aria-selected="false">
       Logs
     </button>
+    <button class="tab" role="tab" data-tab="iframe" aria-selected="false">
+      Iframe
+    </button>
     <button class="tab" role="tab" data-tab="about" aria-selected="false">
       About
     </button>
@@ -386,6 +389,261 @@ the headers the server sent.</pre>
         reload icon for it on <code>chrome://extensions</code> (or
         <code>edge://extensions</code>) and reload this tab — content
         scripts only attach to pages loaded after that.
+      </div>
+    </section>
+
+    <!-- ==================== Iframe ==================== -->
+    <section
+      id="panel-iframe"
+      class="panel"
+      role="tabpanel"
+      hidden
+    >
+      <div class="row">
+        <div class="row-text">
+          <div class="row-title">Target an iframe on this page</div>
+          <div class="row-sub" id="if-select-sub">
+            Checking this page for iframes…
+          </div>
+        </div>
+        <button id="if-refresh-frames-btn" class="copy-btn" type="button">
+          Refresh
+        </button>
+      </div>
+
+      <select id="if-select" class="sw-input if-select" disabled>
+        <option value="">No iframes found</option>
+      </select>
+
+      <div id="if-details" hidden>
+        <div class="csp-block-head log-export-head">
+          <span class="csp-block-title">Configuration (this iframe)</span>
+        </div>
+        <div class="row">
+          <div class="row-text">
+            <div class="row-title">Strip CSP from this iframe</div>
+            <div class="row-sub" id="if-state-sub">
+              CSP headers are working normally for this iframe.
+            </div>
+          </div>
+          <button id="if-strip-btn" class="toggle" type="button">
+            <span class="toggle-track">
+              <span class="toggle-thumb"></span>
+            </span>
+            <span class="toggle-label" id="if-strip-label">Turn ON</span>
+          </button>
+        </div>
+
+        <div class="csp-block">
+          <div class="csp-block-head">
+            <span class="csp-block-title">Captured CSP — response headers</span>
+            <div class="btn-group">
+              <button id="if-copy-btn" class="copy-btn" type="button" disabled>
+                Copy
+              </button>
+              <button id="if-copy-curl-btn" class="copy-btn" type="button" disabled>
+                Copy as curl
+              </button>
+            </div>
+          </div>
+          <div class="csp-meta">
+            <span id="if-csp-url" class="csp-url" title="">—</span>
+          </div>
+          <pre id="if-csp-pre" class="csp-pre is-empty">No CSP captured for this iframe yet.</pre>
+        </div>
+
+        <div class="csp-block csp-block-meta">
+          <div class="csp-block-head">
+            <span class="csp-block-title">Captured CSP — &lt;meta&gt; tags</span>
+            <button id="if-copy-meta-btn" class="copy-btn" type="button" disabled>
+              Copy
+            </button>
+          </div>
+          <pre id="if-meta-pre" class="csp-pre is-empty">No &lt;meta http-equiv="Content-Security-Policy"&gt; tags found in this iframe.</pre>
+        </div>
+
+        <div class="csp-block-head log-export-head">
+          <span class="csp-block-title">Custom CSP (this iframe)</span>
+        </div>
+        <div class="row">
+          <div class="row-text">
+            <div class="row-title">Inject a custom CSP into this iframe</div>
+            <div class="row-sub">
+              Replace what this iframe's server sends with your own policy.
+            </div>
+          </div>
+          <button id="if-inject-btn" class="toggle" type="button">
+            <span class="toggle-track">
+              <span class="toggle-thumb"></span>
+            </span>
+            <span class="toggle-label" id="if-inject-label">Turn ON</span>
+          </button>
+        </div>
+
+        <label class="field-label" for="if-inject-textarea">CSP value</label>
+        <textarea
+          id="if-inject-textarea"
+          class="csp-textarea"
+          spellcheck="false"
+          placeholder="default-src 'self'; script-src 'self';"
+        ></textarea>
+
+        <div class="field-label inline-label">Inject as</div>
+        <div class="radio-group" role="radiogroup" aria-label="Iframe injection method">
+          <label class="radio">
+            <input type="radio" name="if-inject-mode" value="header" checked />
+            <span class="radio-mark"></span>
+            <span class="radio-text">
+              Response header
+              <span class="radio-sub">Replaces this iframe's CSP by URL, across reloads.</span>
+            </span>
+          </label>
+          <label class="radio">
+            <input type="radio" name="if-inject-mode" value="meta" />
+            <span class="radio-mark"></span>
+            <span class="radio-text">
+              &lt;meta&gt; tag
+              <span class="radio-sub">Adds a meta tag inside this iframe's document.</span>
+            </span>
+          </label>
+          <label class="radio">
+            <input type="radio" name="if-inject-mode" value="both" />
+            <span class="radio-mark"></span>
+            <span class="radio-text">
+              Both
+              <span class="radio-sub">Replace as header and add as meta tag.</span>
+            </span>
+          </label>
+        </div>
+
+        <div class="form-actions">
+          <button id="if-apply-btn" class="primary-btn" type="button">
+            Apply &amp; reload
+          </button>
+          <button id="if-reset-btn" class="secondary-btn" type="button">
+            Reset
+          </button>
+        </div>
+
+        <div class="csp-block-head log-export-head">
+          <span class="csp-block-title">Logs (this iframe)</span>
+        </div>
+        <div class="row">
+          <div class="row-text">
+            <div class="row-sub" id="if-logs-summary-sub">
+              No violations captured yet for this iframe.
+            </div>
+          </div>
+          <div class="btn-group">
+            <button id="if-logs-refresh-btn" class="copy-btn" type="button">
+              Refresh
+            </button>
+            <button
+              id="if-logs-clear-btn"
+              class="copy-btn"
+              type="button"
+              title="Logs are captured per tab, not per iframe — this clears the whole tab's log buffer, including the top frame."
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+
+        <div class="log-summary-grid" id="if-log-category-grid"></div>
+
+        <div class="csp-block">
+          <div class="csp-block-head">
+            <span class="csp-block-title">Blocked resources</span>
+          </div>
+          <div id="if-log-violations-list" class="log-list is-empty">
+            No CSP violations captured yet for this iframe.
+          </div>
+        </div>
+
+        <div class="csp-block">
+          <div class="csp-block-head">
+            <span class="csp-block-title">Console activity</span>
+          </div>
+          <div id="if-log-console-list" class="log-list is-empty">
+            No console activity captured yet for this iframe.
+          </div>
+        </div>
+
+        <div class="csp-block">
+          <div class="csp-block-head">
+            <span class="csp-block-title">Service workers (this iframe's origin)</span>
+            <div class="btn-group">
+              <button id="if-sw-refresh-btn" class="copy-btn" type="button">
+                Refresh
+              </button>
+              <button id="if-sw-copy-btn" class="copy-btn" type="button" disabled>
+                Copy
+              </button>
+            </div>
+          </div>
+          <div id="if-sw-list" class="log-list is-empty">
+            Checking for service workers…
+          </div>
+          <div class="sw-add-row">
+            <input
+              id="if-sw-add-url"
+              class="sw-input"
+              type="text"
+              placeholder="/service-worker.js or full URL"
+              spellcheck="false"
+            />
+            <input
+              id="if-sw-add-scope"
+              class="sw-input sw-input-scope"
+              type="text"
+              placeholder="Scope (optional)"
+              spellcheck="false"
+            />
+            <button id="if-sw-add-btn" class="secondary-btn" type="button">
+              Register
+            </button>
+          </div>
+          <div id="if-sw-status" class="hint export-status" hidden></div>
+        </div>
+
+        <div class="csp-block-head log-export-head">
+          <span class="csp-block-title">Export (this iframe)</span>
+        </div>
+        <div class="export-grid">
+          <button id="if-export-debug-btn" class="copy-btn" type="button">
+            Copy debug summary
+          </button>
+          <button id="if-export-original-csp-btn" class="copy-btn" type="button">
+            Copy original CSP
+          </button>
+          <button id="if-export-suggested-csp-btn" class="copy-btn" type="button">
+            Copy suggested CSP
+          </button>
+          <button id="if-export-json-btn" class="secondary-btn" type="button">
+            Export JSON
+          </button>
+          <button id="if-export-har-btn" class="secondary-btn" type="button">
+            Export HAR-like report
+          </button>
+          <button id="if-export-csp-logs-btn" class="secondary-btn" type="button">
+            Export CSP logs
+          </button>
+          <button id="if-export-console-logs-btn" class="secondary-btn" type="button">
+            Export console logs
+          </button>
+        </div>
+        <div id="if-export-status" class="hint export-status" hidden></div>
+      </div>
+
+      <div class="hint">
+        An iframe is matched by its exact URL, not by its live frame id —
+        so a header/meta change here keeps applying to that iframe across
+        reloads, but re-select it after the URL changes. Logs and service
+        workers here only reflect the current page load. Some iframes are
+        rendered <strong>sandboxed with an opaque origin</strong> (common
+        for untrusted embedded content) — response-header strip/inject
+        still works there since it happens at the network layer, but meta
+        injection, logs and service workers cannot reach inside one.
       </div>
     </section>
 

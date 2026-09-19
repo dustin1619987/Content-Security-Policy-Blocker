@@ -743,3 +743,16 @@ main { padding: 12px 14px 14px; }
 .sw-add-row .secondary-btn {
   flex: 0 0 auto;
 }
+
+/* ==========================================================================
+   Iframe tab
+   ========================================================================== */
+
+.if-select {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+}
+.if-select:disabled { opacity: 0.6; }
+
+#if-details { margin-top: 4px; }

@@ -1,15 +1,19 @@
-// Runs at document_start on every page. Asks the background worker
-// whether this tab should have a custom CSP injected as a <meta> tag,
-// and if so, prepends it to <head> as early as possible.
+// Runs at document_start in every frame (top frame and iframes alike).
+// Asks the background worker whether THIS frame should have a custom CSP
+// injected as a <meta> tag — background tells top frame vs. iframe apart
+// via sender.frameId, matching iframes by their own URL (Iframe tab) — and
+// if so, prepends it to <head> as early as possible.
 //
 // CSP violation / console relaying for the Logs tab lives in
-// log-capture.js instead, since that one needs to run in every frame
-// (all_frames: true) while this meta-injection logic stays top-frame-only.
+// log-capture.js, kept separate so this file's job stays just injection.
 
 (async () => {
   let reply;
   try {
-    reply = await chrome.runtime.sendMessage({ type: "getMetaInject" });
+    reply = await chrome.runtime.sendMessage({
+      type: "getMetaInject",
+      frameUrl: location.href
+    });
   } catch (e) {
     return;
   }
