@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Privacy Policy — CSP Disabler</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+         max-width: 720px; margin: 40px auto; padding: 0 20px; line-height: 1.6; color: #1f2328; }
+  h1 { font-size: 22px; }
+  h2 { font-size: 16px; margin-top: 32px; }
+  code { background: #f6f7f9; padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+  .updated { color: #5b6471; font-size: 13px; }
+</style>
+</head>
+<body>
+  <h1>Privacy Policy — CSP Disabler</h1>
+  <p class="updated">Last updated: 2026-09-19</p>
+
+  <p>
+    CSP Disabler ("the extension") is a browser developer tool for
+    inspecting, toggling, and testing Content-Security-Policy behavior on
+    web pages and their iframes. This page explains what the extension
+    does and does not do with your data.
+  </p>
+
+  <h2>Summary</h2>
+  <p><strong>The extension does not collect, store, or transmit any of your data to us or to any third party.</strong>
+  Everything it does happens locally, inside your own browser.</p>
+
+  <h2>What the extension accesses, and why</h2>
+  <ul>
+    <li><strong>Page requests and responses (headers only):</strong> the extension reads and can remove or replace
+      Content-Security-Policy response headers on tabs/iframes you choose to test. It does not read or store
+      page content, form data, cookies, or credentials.</li>
+    <li><strong>Page CSP violations, console messages, and service worker registrations:</strong> shown only in the
+      extension's own popup, for the tab you have it open on, so you can debug your own site. This data is kept
+      in memory and in the browser's local session storage — it is never sent anywhere.</li>
+    <li><strong>Your toggle settings and theme preference:</strong> saved locally via the browser's extension
+      storage APIs (<code>chrome.storage.session</code> / <code>chrome.storage.local</code>) so your settings
+      persist across popup opens. This data stays on your device.</li>
+    <li><strong>Exported files (JSON/HAR/CSP logs):</strong> generated on demand and saved directly to your own
+      Downloads folder, at your request, via the browser's download API. Nothing is uploaded anywhere.</li>
+  </ul>
+
+  <h2>What the extension does not do</h2>
+  <ul>
+    <li>It does not use analytics, tracking pixels, or third-party SDKs.</li>
+    <li>It does not send any data to a remote server operated by us or anyone else.</li>
+    <li>It does not sell, rent, or share user data, because it does not collect any.</li>
+    <li>It does not access your browsing history beyond the currently open tab you're actively debugging.</li>
+  </ul>
+
+  <h2>Enterprise policy (optional, admin-configured)</h2>
+  <p>
+    If a workplace administrator has configured a managed policy value for this extension (via the standard
+    Chrome enterprise "3rd-party extension" policy mechanism), that value is displayed in the extension's
+    Browser Policy tab. This is configured by the administrator, not collected from the user.
+  </p>
+
+  <h2>Changes to this policy</h2>
+  <p>
+    If this policy changes, the "Last updated" date above will change accordingly. Material changes will also
+    be noted in the extension's Chrome Web Store listing.
+  </p>
+
+  <h2>Contact</h2>
+  <p>
+    Questions about this policy or the extension can be filed as an issue on the
+    <a href="https://github.com/dustin1619987/Content-Security-Policy-Blocker">GitHub repository</a>.
+  </p>
+</body>
+</html>
