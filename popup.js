@@ -12,6 +12,7 @@ const els = {
     custom: document.getElementById("panel-custom"),
     policy: document.getElementById("panel-policy"),
     logs: document.getElementById("panel-logs"),
+    iframe: document.getElementById("panel-iframe"),
     about: document.getElementById("panel-about")
   },
 
@@ -75,6 +76,53 @@ const els = {
   swAddBtn: document.getElementById("sw-add-btn"),
   swStatus: document.getElementById("sw-status"),
 
+  // Iframe tab
+  ifSelectSub: document.getElementById("if-select-sub"),
+  ifRefreshFramesBtn: document.getElementById("if-refresh-frames-btn"),
+  ifSelect: document.getElementById("if-select"),
+  ifDetails: document.getElementById("if-details"),
+
+  ifStripBtn: document.getElementById("if-strip-btn"),
+  ifStripLabel: document.getElementById("if-strip-label"),
+  ifStateSub: document.getElementById("if-state-sub"),
+  ifCspPre: document.getElementById("if-csp-pre"),
+  ifCspUrl: document.getElementById("if-csp-url"),
+  ifCopyBtn: document.getElementById("if-copy-btn"),
+  ifCopyCurlBtn: document.getElementById("if-copy-curl-btn"),
+  ifMetaPre: document.getElementById("if-meta-pre"),
+  ifCopyMetaBtn: document.getElementById("if-copy-meta-btn"),
+
+  ifInjectBtn: document.getElementById("if-inject-btn"),
+  ifInjectLabel: document.getElementById("if-inject-label"),
+  ifInjectTextarea: document.getElementById("if-inject-textarea"),
+  ifModeRadios: Array.from(document.querySelectorAll('input[name="if-inject-mode"]')),
+  ifApplyBtn: document.getElementById("if-apply-btn"),
+  ifResetBtn: document.getElementById("if-reset-btn"),
+
+  ifLogsSummarySub: document.getElementById("if-logs-summary-sub"),
+  ifLogCategoryGrid: document.getElementById("if-log-category-grid"),
+  ifLogViolationsList: document.getElementById("if-log-violations-list"),
+  ifLogConsoleList: document.getElementById("if-log-console-list"),
+  ifLogsRefreshBtn: document.getElementById("if-logs-refresh-btn"),
+  ifLogsClearBtn: document.getElementById("if-logs-clear-btn"),
+
+  ifSwList: document.getElementById("if-sw-list"),
+  ifSwRefreshBtn: document.getElementById("if-sw-refresh-btn"),
+  ifSwCopyBtn: document.getElementById("if-sw-copy-btn"),
+  ifSwAddUrl: document.getElementById("if-sw-add-url"),
+  ifSwAddScope: document.getElementById("if-sw-add-scope"),
+  ifSwAddBtn: document.getElementById("if-sw-add-btn"),
+  ifSwStatus: document.getElementById("if-sw-status"),
+
+  ifExportDebugBtn: document.getElementById("if-export-debug-btn"),
+  ifExportOriginalCspBtn: document.getElementById("if-export-original-csp-btn"),
+  ifExportSuggestedCspBtn: document.getElementById("if-export-suggested-csp-btn"),
+  ifExportJsonBtn: document.getElementById("if-export-json-btn"),
+  ifExportHarBtn: document.getElementById("if-export-har-btn"),
+  ifExportCspLogsBtn: document.getElementById("if-export-csp-logs-btn"),
+  ifExportConsoleLogsBtn: document.getElementById("if-export-console-logs-btn"),
+  ifExportStatus: document.getElementById("if-export-status"),
+
   // About
   aboutVersion: document.getElementById("about-version")
 };
@@ -95,8 +143,32 @@ const state = {
   rawMeta: "",
   logs: { violations: [], console: [] },
   serviceWorkers: { supported: false, url: null, registrations: [] },
-  capturedSwText: ""
+  capturedSwText: "",
+
+  // All frames on the page (top frame excluded), refreshed on demand.
+  frames: [],
+  iframe: iframeCtxDefaults()
 };
+
+// The Iframe tab's per-frame context. Shares field names with the
+// top-level state fields the export builders read (url, capturedCspText,
+// logs, etc.) so those builders work unmodified against either.
+function iframeCtxDefaults() {
+  return {
+    frameId: null,
+    url: null,
+    strip: false,
+    inject: { enabled: false, value: "", mode: "header" },
+    capturedCspText: "",
+    capturedMetaText: "",
+    capturedUrl: "",
+    rawCsp: "",
+    rawMeta: "",
+    logs: { violations: [], console: [] },
+    serviceWorkers: { supported: false, url: null, registrations: [] },
+    capturedSwText: ""
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Visual state
@@ -365,16 +437,15 @@ async function copyText(text, btn) {
   }
 }
 
-function buildCurlCommand() {
-  if (!state.capturedUrl) return "";
-  const url = state.capturedUrl;
+function buildCurlCommand(url, cspText) {
+  if (!url) return "";
   // Use single-quote-safe form: replace any ' with '"'"'.
   const safe = url.replace(/'/g, "'\"'\"'");
   const lines = [
     `curl -is '${safe}'`,
     "  # The response should include:"
   ];
-  for (const line of state.capturedCspText.split("\n")) {
+  for (const line of (cspText || "").split("\n")) {
     if (line) lines.push(`  #   ${line}`);
   }
   return lines.join("\n");
@@ -608,8 +679,8 @@ function truncate(s, n) {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 
-function renderLogCategories(counts) {
-  els.logCategoryGrid.textContent = "";
+function renderLogCategories(counts, container) {
+  container.textContent = "";
   for (const [key, label] of LOG_CATEGORIES) {
     const count = counts[key] || 0;
     const chip = document.createElement("div");
@@ -622,12 +693,11 @@ function renderLogCategories(counts) {
     countSpan.textContent = String(count);
     chip.appendChild(labelSpan);
     chip.appendChild(countSpan);
-    els.logCategoryGrid.appendChild(chip);
+    container.appendChild(chip);
   }
 }
 
-function renderViolationsList(violations) {
-  const el = els.logViolationsList;
+function renderViolationsList(violations, el) {
   el.textContent = "";
   if (!violations.length) {
     el.classList.add("is-empty");
@@ -672,8 +742,7 @@ function renderViolationsList(violations) {
   }
 }
 
-function renderConsoleList(entries) {
-  const el = els.logConsoleList;
+function renderConsoleList(entries, el) {
   el.textContent = "";
   if (!entries.length) {
     el.classList.add("is-empty");
@@ -719,9 +788,9 @@ function renderConsoleList(entries) {
 
 function renderLogs(logs) {
   state.logs = logs;
-  renderLogCategories(countByCategory(logs.violations));
-  renderViolationsList(logs.violations);
-  renderConsoleList(logs.console);
+  renderLogCategories(countByCategory(logs.violations), els.logCategoryGrid);
+  renderViolationsList(logs.violations, els.logViolationsList);
+  renderConsoleList(logs.console, els.logConsoleList);
 
   const vCount = logs.violations.length;
   const cCount = logs.console.length;
@@ -764,15 +833,15 @@ function swStateLabel(name, info) {
   return `${name}: ${info.scriptURL} (${info.state})`;
 }
 
-function buildSwSummaryText() {
-  const { supported, url, registrations } = state.serviceWorkers;
+function buildSwSummaryText(swData, pageUrl) {
+  const { supported, url, registrations } = swData;
   if (!supported) {
-    return `Service workers are not supported/inspectable on this page (${url || state.url || "unknown"}).`;
+    return `Service workers are not supported/inspectable on this page (${url || pageUrl || "unknown"}).`;
   }
   if (!registrations.length) {
-    return `No service workers registered for ${url || state.url || "this page"}.`;
+    return `No service workers registered for ${url || pageUrl || "this page"}.`;
   }
-  const lines = [`Service workers for ${url || state.url || "this page"}:`, ""];
+  const lines = [`Service workers for ${url || pageUrl || "this page"}:`, ""];
   for (const r of registrations) {
     lines.push(`Scope: ${r.scope}`);
     for (const [name, info] of [
@@ -788,23 +857,20 @@ function buildSwSummaryText() {
   return lines.join("\n").trim();
 }
 
-function setSwStatus(message, isError) {
+function setStatusEl(el, message, isError) {
   if (!message) {
-    els.swStatus.hidden = true;
-    els.swStatus.textContent = "";
+    el.hidden = true;
+    el.textContent = "";
     return;
   }
-  els.swStatus.hidden = false;
-  els.swStatus.classList.toggle("export-status", Boolean(isError));
-  els.swStatus.textContent = message;
+  el.hidden = false;
+  el.classList.toggle("export-status", Boolean(isError));
+  el.textContent = message;
 }
 
-function renderServiceWorkers(info) {
-  state.serviceWorkers = info;
-  state.capturedSwText = buildSwSummaryText();
-  els.swCopyBtn.disabled = false;
-
-  const el = els.swList;
+// Pure DOM render — reused by both the top-level Logs tab and the Iframe
+// tab's own Service workers section.
+function renderServiceWorkersInto(info, el, onUnregister) {
   el.textContent = "";
 
   if (!info.supported) {
@@ -849,12 +915,19 @@ function renderServiceWorkers(info) {
     unregisterBtn.type = "button";
     unregisterBtn.className = "copy-btn";
     unregisterBtn.textContent = "Unregister";
-    unregisterBtn.addEventListener("click", () => onUnregisterServiceWorker(r.scope, unregisterBtn));
+    unregisterBtn.addEventListener("click", () => onUnregister(r.scope, unregisterBtn));
     actions.appendChild(unregisterBtn);
     entry.appendChild(actions);
 
     el.appendChild(entry);
   }
+}
+
+function renderServiceWorkers(info) {
+  state.serviceWorkers = info;
+  state.capturedSwText = buildSwSummaryText(info, state.url);
+  els.swCopyBtn.disabled = false;
+  renderServiceWorkersInto(info, els.swList, onUnregisterServiceWorker);
 }
 
 async function loadServiceWorkers() {
@@ -876,7 +949,7 @@ async function onRegisterServiceWorker() {
     return;
   }
   els.swAddBtn.disabled = true;
-  setSwStatus("");
+  setStatusEl(els.swStatus, "");
   const reply = await send({
     type: "registerServiceWorker",
     tabId: state.tabId,
@@ -887,17 +960,17 @@ async function onRegisterServiceWorker() {
   if (reply && reply.ok) {
     els.swAddUrl.value = "";
     els.swAddScope.value = "";
-    setSwStatus(`Registered with scope ${reply.scope}.`, false);
+    setStatusEl(els.swStatus, `Registered with scope ${reply.scope}.`, false);
     await loadServiceWorkers();
   } else {
-    setSwStatus((reply && reply.error) || "Registration failed.", true);
+    setStatusEl(els.swStatus, (reply && reply.error) || "Registration failed.", true);
   }
 }
 
 async function onUnregisterServiceWorker(scope, btn) {
   if (state.tabId == null) return;
   btn.disabled = true;
-  setSwStatus("");
+  setStatusEl(els.swStatus, "");
   const reply = await send({
     type: "unregisterServiceWorker",
     tabId: state.tabId,
@@ -907,7 +980,7 @@ async function onUnregisterServiceWorker(scope, btn) {
     await loadServiceWorkers();
   } else {
     btn.disabled = false;
-    setSwStatus((reply && reply.error) || "Unregister failed.", true);
+    setStatusEl(els.swStatus, (reply && reply.error) || "Unregister failed.", true);
   }
 }
 
@@ -934,9 +1007,9 @@ function parseCspText(policyText) {
   return map;
 }
 
-function originFromUrl(u) {
+function originFromUrl(u, baseUrl) {
   try {
-    const parsed = new URL(u, state.url || undefined);
+    const parsed = new URL(u, baseUrl || undefined);
     if (["data:", "blob:", "filesystem:"].includes(parsed.protocol)) {
       return parsed.protocol;
     }
@@ -968,7 +1041,7 @@ const CSP_DIRECTIVE_ORDER = [
   "worker-src"
 ];
 
-function buildSuggestedCsp(rawPolicy, violations) {
+function buildSuggestedCsp(rawPolicy, violations, pageUrl) {
   const map = parseCspText(rawPolicy);
   const notes = new Set();
 
@@ -992,7 +1065,7 @@ function buildSuggestedCsp(rawPolicy, violations) {
     } else if (blocked === "self") {
       set.add("'self'");
     } else if (v.blockedURI) {
-      const origin = originFromUrl(v.blockedURI);
+      const origin = originFromUrl(v.blockedURI, pageUrl);
       if (origin) set.add(origin);
     }
   }
@@ -1000,7 +1073,7 @@ function buildSuggestedCsp(rawPolicy, violations) {
   if (map.size === 0) {
     return (
       "# No original CSP was captured and no violations have been observed yet —\n" +
-      "# nothing to suggest. Reload the page on the Configuration tab first."
+      "# nothing to suggest. Reload the page first."
     );
   }
 
@@ -1015,7 +1088,7 @@ function buildSuggestedCsp(rawPolicy, violations) {
 
   const lines = keys.map((d) => `${d} ${Array.from(map.get(d)).sort().join(" ")};`);
   const header = [
-    `# Suggested CSP — generated from ${violations.length} captured violation(s) on ${state.url || "this page"}.`,
+    `# Suggested CSP — generated from ${violations.length} captured violation(s) on ${pageUrl || "this page"}.`,
     "# This only reflects what this browsing session happened to trigger — review",
     "# it against the app's real requirements before using it anywhere."
   ];
@@ -1026,71 +1099,76 @@ function buildSuggestedCsp(rawPolicy, violations) {
 // ---------------------------------------------------------------------------
 // Debug summary / JSON / HAR-like export builders
 
-function buildDebugSummary() {
-  const counts = countByCategory(state.logs.violations);
+function buildDebugSummary(ctx) {
+  ctx = ctx || state;
+  const counts = countByCategory(ctx.logs.violations);
   const lines = [
     "CSP Disabler — debug summary",
     `Generated: ${new Date().toISOString()}`,
-    `Tab URL: ${state.url || "—"}`,
+    `URL: ${ctx.url || "—"}`,
     `Browser: ${state.detectedBrowserName || "Unknown"} ${state.detectedBrowserVersion || ""}`.trim(),
     "",
     "Original CSP (response headers):",
-    state.capturedCspText || "  none captured",
+    ctx.capturedCspText || "  none captured",
     "",
     "Original CSP (<meta> tags):",
-    state.capturedMetaText || "  none captured",
+    ctx.capturedMetaText || "  none captured",
     "",
-    `CSP violations captured: ${state.logs.violations.length}`
+    `CSP violations captured: ${ctx.logs.violations.length}`
   ];
   for (const [key, label] of LOG_CATEGORIES) {
     if (counts[key] > 0) lines.push(`  ${label}: ${counts[key]}`);
   }
-  const errCount = state.logs.console.filter((c) => c.level === "error").length;
-  const warnCount = state.logs.console.filter((c) => c.level === "warn").length;
+  const errCount = ctx.logs.console.filter((c) => c.level === "error").length;
+  const warnCount = ctx.logs.console.filter((c) => c.level === "warn").length;
   lines.push("");
-  lines.push(`Console entries captured: ${state.logs.console.length}`);
+  lines.push(`Console entries captured: ${ctx.logs.console.length}`);
   lines.push(
     `  errors: ${errCount}, warnings: ${warnCount}, other: ${
-      state.logs.console.length - errCount - warnCount
+      ctx.logs.console.length - errCount - warnCount
     }`
   );
   return lines.join("\n");
 }
 
-function currentOriginalCspText() {
+function currentOriginalCspText(ctx) {
+  ctx = ctx || state;
   const parts = [];
-  if (state.capturedCspText) parts.push("Response headers:\n" + state.capturedCspText);
-  if (state.capturedMetaText) parts.push("<meta> tags:\n" + state.capturedMetaText);
-  return parts.length ? parts.join("\n\n") : "No original CSP captured for this tab.";
+  if (ctx.capturedCspText) parts.push("Response headers:\n" + ctx.capturedCspText);
+  if (ctx.capturedMetaText) parts.push("<meta> tags:\n" + ctx.capturedMetaText);
+  return parts.length ? parts.join("\n\n") : "No original CSP captured yet.";
 }
 
-function buildJsonExport() {
+function buildJsonExport(ctx) {
+  ctx = ctx || state;
   return JSON.stringify(
     {
       generatedAt: new Date().toISOString(),
-      url: state.url,
+      url: ctx.url,
       browser: {
         name: state.detectedBrowserName,
         version: state.detectedBrowserVersion
       },
       originalCsp: {
-        headers: state.capturedCspText || null,
-        meta: state.capturedMetaText || null
+        headers: ctx.capturedCspText || null,
+        meta: ctx.capturedMetaText || null
       },
       suggestedCsp: buildSuggestedCsp(
-        state.rawCsp || state.rawMeta || "",
-        state.logs.violations
+        ctx.rawCsp || ctx.rawMeta || "",
+        ctx.logs.violations,
+        ctx.url
       ),
-      violations: state.logs.violations,
-      console: state.logs.console
+      violations: ctx.logs.violations,
+      console: ctx.logs.console
     },
     null,
     2
   );
 }
 
-function buildHarReport() {
-  const entries = state.logs.violations.map((v) => {
+function buildHarReport(ctx) {
+  ctx = ctx || state;
+  const entries = ctx.logs.violations.map((v) => {
     const blocked = (v.blockedURI || "").toLowerCase();
     const isRealUrl = v.blockedURI && !["inline", "eval", "wasm-eval", ""].includes(blocked);
     return {
@@ -1099,7 +1177,7 @@ function buildHarReport() {
       time: 0,
       request: {
         method: "GET",
-        url: isRealUrl ? v.blockedURI : v.documentURI || state.url || "",
+        url: isRealUrl ? v.blockedURI : v.documentURI || ctx.url || "",
         httpVersion: "HTTP/1.1",
         cookies: [],
         headers: [],
@@ -1145,7 +1223,7 @@ function buildHarReport() {
           {
             startedDateTime: new Date().toISOString(),
             id: "page_1",
-            title: state.url || "",
+            title: ctx.url || "",
             pageTimings: {}
           }
         ],
@@ -1157,108 +1235,472 @@ function buildHarReport() {
   );
 }
 
-function safeHost() {
+function safeHost(url) {
   try {
-    return new URL(state.url).host.replace(/[^a-z0-9.-]/gi, "_") || "page";
+    return new URL(url).host.replace(/[^a-z0-9.-]/gi, "_") || "page";
   } catch (e) {
     return "page";
   }
 }
 
-function setExportStatus(message) {
+function setExportStatus(el, message) {
   if (!message) {
-    els.exportStatus.hidden = true;
-    els.exportStatus.textContent = "";
+    el.hidden = true;
+    el.textContent = "";
     return;
   }
-  els.exportStatus.hidden = false;
-  els.exportStatus.textContent = `Export failed: ${message}`;
+  el.hidden = false;
+  el.textContent = `Export failed: ${message}`;
 }
 
-async function downloadFile(filename, content, mime, btn) {
+async function downloadFile(filename, content, mime, btn, statusEl) {
   btn.disabled = true;
   const reply = await send({ type: "downloadFile", filename, content, mime });
   btn.disabled = false;
   if (reply && reply.ok) {
     flashCopy(btn, "Saved");
-    setExportStatus("");
+    setExportStatus(statusEl, "");
   } else {
     flashCopy(btn, "Failed");
     setExportStatus(
+      statusEl,
       (reply && reply.error) ||
         "No response from the extension's background worker."
     );
   }
 }
 
-async function onCopyDebugSummary() {
-  await copyText(buildDebugSummary(), els.exportDebugBtn);
+// Generic export/copy actions — shared by the top-level Logs tab and the
+// Iframe tab, which just pass a different ctx (state vs. state.iframe)
+// and button set.
+
+async function copyDebugSummary(ctx, btn) {
+  await copyText(buildDebugSummary(ctx), btn);
 }
 
-async function onCopyOriginalCsp() {
-  await copyText(currentOriginalCspText(), els.exportOriginalCspBtn);
+async function copyOriginalCsp(ctx, btn) {
+  await copyText(currentOriginalCspText(ctx), btn);
 }
 
-async function onCopySuggestedCsp() {
+async function copySuggestedCsp(ctx, btn) {
   const suggestion = buildSuggestedCsp(
-    state.rawCsp || state.rawMeta || "",
-    state.logs.violations
+    ctx.rawCsp || ctx.rawMeta || "",
+    ctx.logs.violations,
+    ctx.url
   );
-  await copyText(suggestion, els.exportSuggestedCspBtn);
+  await copyText(suggestion, btn);
 }
 
-async function onExportJson() {
+async function exportJson(ctx, btn, statusEl) {
   await downloadFile(
-    `csp-debug-${safeHost()}-${Date.now()}.json`,
-    buildJsonExport(),
+    `csp-debug-${safeHost(ctx.url)}-${Date.now()}.json`,
+    buildJsonExport(ctx),
     "application/json",
-    els.exportJsonBtn
+    btn,
+    statusEl
   );
 }
 
-async function onExportHar() {
+async function exportHar(ctx, btn, statusEl) {
   await downloadFile(
-    `csp-report-${safeHost()}-${Date.now()}.har`,
-    buildHarReport(),
+    `csp-report-${safeHost(ctx.url)}-${Date.now()}.har`,
+    buildHarReport(ctx),
     "application/json",
-    els.exportHarBtn
+    btn,
+    statusEl
   );
 }
 
-async function onExportCspLogs() {
+async function exportCspLogs(ctx, btn, statusEl) {
   const data = JSON.stringify(
-    {
-      url: state.url,
-      exportedAt: new Date().toISOString(),
-      violations: state.logs.violations
-    },
+    { url: ctx.url, exportedAt: new Date().toISOString(), violations: ctx.logs.violations },
     null,
     2
   );
-  await downloadFile(
-    `csp-violations-${safeHost()}-${Date.now()}.json`,
-    data,
-    "application/json",
-    els.exportCspLogsBtn
-  );
+  await downloadFile(`csp-violations-${safeHost(ctx.url)}-${Date.now()}.json`, data, "application/json", btn, statusEl);
 }
 
-async function onExportConsoleLogs() {
+async function exportConsoleLogs(ctx, btn, statusEl) {
   const data = JSON.stringify(
-    {
-      url: state.url,
-      exportedAt: new Date().toISOString(),
-      console: state.logs.console
-    },
+    { url: ctx.url, exportedAt: new Date().toISOString(), console: ctx.logs.console },
     null,
     2
   );
-  await downloadFile(
-    `console-logs-${safeHost()}-${Date.now()}.json`,
-    data,
-    "application/json",
-    els.exportConsoleLogsBtn
+  await downloadFile(`console-logs-${safeHost(ctx.url)}-${Date.now()}.json`, data, "application/json", btn, statusEl);
+}
+
+// ---------------------------------------------------------------------------
+// Iframe tab
+//
+// Mirrors Configuration + Custom CSP + Logs + Service workers, scoped to
+// one iframe on the page instead of the whole tab. The iframe is matched
+// by its exact URL (see background.js) rather than its live frameId,
+// because frameId is reassigned on every reload but the whole point is a
+// setting that keeps applying to "that iframe" across the reload needed
+// to make a header/meta change take effect. frameId is still used, live,
+// for things that only make sense against the frame as it exists right
+// now: filtering this load's captured logs, and targeting
+// chrome.scripting.executeScript for the meta/service-worker reads.
+
+function ifReadMode() {
+  const r = els.ifModeRadios.find((x) => x.checked);
+  return r ? r.value : "header";
+}
+
+function applyIframeStrip(strip) {
+  state.iframe.strip = strip;
+  els.ifStripBtn.classList.toggle("is-on", strip);
+  els.ifStripLabel.textContent = strip ? "Turn OFF" : "Turn ON";
+  els.ifStateSub.textContent = strip
+    ? "CSP headers are being stripped from this iframe's responses."
+    : "CSP headers are working normally for this iframe.";
+}
+
+function applyIframeInject(inject) {
+  state.iframe.inject = { ...state.iframe.inject, ...inject };
+  els.ifInjectBtn.classList.toggle("is-on", state.iframe.inject.enabled);
+  els.ifInjectLabel.textContent = state.iframe.inject.enabled ? "Turn OFF" : "Turn ON";
+  if (typeof inject.value === "string" && els.ifInjectTextarea.value !== inject.value) {
+    els.ifInjectTextarea.value = inject.value;
+  }
+  if (typeof inject.mode === "string") {
+    for (const r of els.ifModeRadios) r.checked = r.value === inject.mode;
+  }
+}
+
+function renderIframeHeaders(record) {
+  if (!record || !Array.isArray(record.headers) || record.headers.length === 0) {
+    els.ifCspPre.textContent = "No CSP captured for this iframe yet.";
+    els.ifCspPre.classList.add("is-empty");
+    els.ifCspUrl.textContent = "—";
+    els.ifCspUrl.title = "";
+    els.ifCopyBtn.disabled = true;
+    els.ifCopyCurlBtn.disabled = true;
+    state.iframe.capturedCspText = "";
+    state.iframe.capturedUrl = "";
+    state.iframe.rawCsp = "";
+    return;
+  }
+  els.ifCspPre.classList.remove("is-empty");
+  els.ifCspUrl.textContent = record.url || "—";
+  els.ifCspUrl.title = record.url || "";
+  state.iframe.capturedUrl = record.url || "";
+  state.iframe.capturedCspText = record.headers
+    .map(({ name, value }) => `${name}: ${value}`)
+    .join("\n");
+  const enforced = record.headers.find(
+    (h) => (h.name || "").toLowerCase() === "content-security-policy"
   );
+  state.iframe.rawCsp = (enforced || record.headers[0]).value || "";
+
+  els.ifCspPre.textContent = "";
+  for (const { name, value } of record.headers) {
+    const span = document.createElement("span");
+    span.className = "csp-directive";
+    span.textContent = `${name}: `;
+    els.ifCspPre.appendChild(span);
+    els.ifCspPre.appendChild(document.createTextNode(value));
+    els.ifCspPre.appendChild(document.createTextNode("\n"));
+  }
+  els.ifCopyBtn.disabled = false;
+  els.ifCopyCurlBtn.disabled = !state.iframe.capturedUrl;
+}
+
+function renderIframeMeta(record) {
+  if (!record || !Array.isArray(record.metas) || record.metas.length === 0) {
+    els.ifMetaPre.textContent =
+      'No <meta http-equiv="Content-Security-Policy"> tags found in this iframe.';
+    els.ifMetaPre.classList.add("is-empty");
+    els.ifCopyMetaBtn.disabled = true;
+    state.iframe.capturedMetaText = "";
+    state.iframe.rawMeta = "";
+    return;
+  }
+  els.ifMetaPre.classList.remove("is-empty");
+  state.iframe.capturedMetaText = record.metas
+    .map((m) => `${m.name}: ${m.value}${m.injected ? "  (injected)" : ""}`)
+    .join("\n");
+  const nonInjected = record.metas.find((m) => !m.injected);
+  state.iframe.rawMeta = (nonInjected || record.metas[0]).value || "";
+
+  els.ifMetaPre.textContent = "";
+  for (const m of record.metas) {
+    const span = document.createElement("span");
+    span.className = "csp-directive";
+    span.textContent = `${m.name}: `;
+    els.ifMetaPre.appendChild(span);
+    els.ifMetaPre.appendChild(document.createTextNode(m.value));
+    if (m.injected) {
+      const tag = document.createElement("span");
+      tag.style.color = "var(--accent)";
+      tag.style.fontWeight = "700";
+      tag.textContent = "  (injected)";
+      els.ifMetaPre.appendChild(tag);
+    }
+    els.ifMetaPre.appendChild(document.createTextNode("\n"));
+  }
+  els.ifCopyMetaBtn.disabled = false;
+}
+
+function frameOptionLabel(f) {
+  let label;
+  try {
+    const u = new URL(f.url);
+    label = u.host + u.pathname;
+  } catch (e) {
+    label = f.url;
+  }
+  return truncate(label, 60);
+}
+
+async function loadFrameDetails() {
+  if (state.tabId == null || state.iframe.frameId == null) return;
+  const reply = await send({
+    type: "getFrameInfo",
+    tabId: state.tabId,
+    frameId: state.iframe.frameId,
+    frameUrl: state.iframe.url
+  });
+  if (reply) {
+    applyIframeStrip(Boolean(reply.strip));
+    applyIframeInject(reply.inject || {});
+    renderIframeHeaders(reply.csp);
+    renderIframeMeta(reply.meta);
+  }
+  await Promise.all([loadIframeLogs(), loadIframeServiceWorkers()]);
+}
+
+async function onFrameSelectChange() {
+  const frameId = els.ifSelect.value ? Number(els.ifSelect.value) : null;
+  if (frameId == null) {
+    els.ifDetails.hidden = true;
+    state.iframe = iframeCtxDefaults();
+    return;
+  }
+  const frame = state.frames.find((f) => f.frameId === frameId);
+  state.iframe = iframeCtxDefaults();
+  state.iframe.frameId = frameId;
+  state.iframe.url = frame ? frame.url : null;
+  els.ifDetails.hidden = false;
+  await loadFrameDetails();
+}
+
+async function loadFrames() {
+  if (state.tabId == null) return;
+  const reply = await send({ type: "getFrames", tabId: state.tabId });
+  state.frames = reply && Array.isArray(reply.frames) ? reply.frames : [];
+
+  const previousFrameId = state.iframe.frameId;
+  els.ifSelect.textContent = "";
+
+  if (!state.frames.length) {
+    els.ifSelectSub.textContent = "No iframes found on this page.";
+    els.ifSelect.disabled = true;
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "No iframes found";
+    els.ifSelect.appendChild(opt);
+    els.ifDetails.hidden = true;
+    state.iframe = iframeCtxDefaults();
+    return;
+  }
+
+  els.ifSelectSub.textContent =
+    `${state.frames.length} iframe${state.frames.length === 1 ? "" : "s"} found on this page.`;
+  els.ifSelect.disabled = false;
+
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Select an iframe…";
+  els.ifSelect.appendChild(placeholder);
+
+  let stillPresent = false;
+  for (const f of state.frames) {
+    const opt = document.createElement("option");
+    opt.value = String(f.frameId);
+    opt.textContent = frameOptionLabel(f);
+    opt.title = f.url;
+    if (f.frameId === previousFrameId) {
+      opt.selected = true;
+      stillPresent = true;
+    }
+    els.ifSelect.appendChild(opt);
+  }
+
+  if (!stillPresent) {
+    els.ifSelect.value = "";
+    els.ifDetails.hidden = true;
+    state.iframe = iframeCtxDefaults();
+  } else {
+    await loadFrameDetails();
+  }
+}
+
+async function onIframeStripClick() {
+  if (state.tabId == null || !state.iframe.url) return;
+  const next = !state.iframe.strip;
+  applyIframeStrip(next);
+  els.ifStripBtn.disabled = true;
+  await send({
+    type: "setFrameStrip",
+    tabId: state.tabId,
+    frameUrl: state.iframe.url,
+    strip: next
+  });
+  await send({ type: "reload", tabId: state.tabId });
+  els.ifStripBtn.disabled = false;
+}
+
+async function onIframeInjectClick() {
+  if (state.tabId == null || !state.iframe.url) return;
+  const next = !state.iframe.inject.enabled;
+  const value = els.ifInjectTextarea.value.trim();
+  if (next && !value) {
+    els.ifInjectTextarea.focus();
+    return;
+  }
+  applyIframeInject({ enabled: next, value, mode: ifReadMode() });
+  els.ifInjectBtn.disabled = true;
+  await send({
+    type: "setFrameInject",
+    tabId: state.tabId,
+    frameUrl: state.iframe.url,
+    inject: { enabled: next, value, mode: ifReadMode() }
+  });
+  await send({ type: "reload", tabId: state.tabId });
+  els.ifInjectBtn.disabled = false;
+}
+
+async function onIframeApplyClick() {
+  if (state.tabId == null || !state.iframe.url) return;
+  const value = els.ifInjectTextarea.value.trim();
+  if (!value) {
+    els.ifInjectTextarea.focus();
+    return;
+  }
+  applyIframeInject({ enabled: true, value, mode: ifReadMode() });
+  els.ifApplyBtn.disabled = true;
+  await send({
+    type: "setFrameInject",
+    tabId: state.tabId,
+    frameUrl: state.iframe.url,
+    inject: { enabled: true, value, mode: ifReadMode() }
+  });
+  await send({ type: "reload", tabId: state.tabId });
+  els.ifApplyBtn.disabled = false;
+}
+
+async function onIframeResetClick() {
+  if (state.tabId == null || !state.iframe.url) return;
+  els.ifInjectTextarea.value = "";
+  applyIframeInject({ enabled: false, value: "", mode: "header" });
+  await send({
+    type: "setFrameInject",
+    tabId: state.tabId,
+    frameUrl: state.iframe.url,
+    inject: { enabled: false, value: "", mode: "header" }
+  });
+  await send({ type: "reload", tabId: state.tabId });
+}
+
+async function loadIframeLogs() {
+  if (state.tabId == null) return;
+  const reply = await send({ type: "getLogs", tabId: state.tabId });
+  const all = reply && Array.isArray(reply.violations) ? reply : { violations: [], console: [] };
+  const fid = state.iframe.frameId;
+  const violations = all.violations.filter((v) => v.frameId === fid);
+  const consoleEntries = all.console.filter((c) => c.frameId === fid);
+  state.iframe.logs = { violations, console: consoleEntries };
+
+  renderLogCategories(countByCategory(violations), els.ifLogCategoryGrid);
+  renderViolationsList(violations, els.ifLogViolationsList);
+  renderConsoleList(consoleEntries, els.ifLogConsoleList);
+
+  const vCount = violations.length;
+  const cCount = consoleEntries.length;
+  els.ifLogsSummarySub.textContent =
+    !vCount && !cCount
+      ? "No violations captured yet for this iframe."
+      : `${vCount} CSP violation${vCount === 1 ? "" : "s"} and ` +
+        `${cCount} console entr${cCount === 1 ? "y" : "ies"} captured for this iframe.`;
+}
+
+async function onIframeClearLogsClick() {
+  if (state.tabId == null) return;
+  // Logs are captured per-tab, not per-frame, on the backend — this
+  // clears the whole tab's buffer (top frame included), same as the
+  // Logs tab's own Clear button. The if-logs-clear-btn tooltip says so.
+  els.ifLogsClearBtn.disabled = true;
+  await send({ type: "clearLogs", tabId: state.tabId });
+  await Promise.all([loadIframeLogs(), loadLogs()]);
+  els.ifLogsClearBtn.disabled = false;
+}
+
+function renderIframeServiceWorkers(info) {
+  state.iframe.serviceWorkers = info;
+  state.iframe.capturedSwText = buildSwSummaryText(info, state.iframe.url);
+  els.ifSwCopyBtn.disabled = false;
+  renderServiceWorkersInto(info, els.ifSwList, onUnregisterIframeServiceWorker);
+}
+
+async function loadIframeServiceWorkers() {
+  if (state.tabId == null || state.iframe.frameId == null) return;
+  const reply = await send({
+    type: "getServiceWorkers",
+    tabId: state.tabId,
+    frameId: state.iframe.frameId
+  });
+  renderIframeServiceWorkers(
+    reply && typeof reply === "object"
+      ? reply
+      : { supported: false, url: null, registrations: [] }
+  );
+}
+
+async function onRegisterIframeServiceWorker() {
+  if (state.tabId == null || state.iframe.frameId == null) return;
+  const scriptUrl = els.ifSwAddUrl.value.trim();
+  const scope = els.ifSwAddScope.value.trim();
+  if (!scriptUrl) {
+    els.ifSwAddUrl.focus();
+    return;
+  }
+  els.ifSwAddBtn.disabled = true;
+  setStatusEl(els.ifSwStatus, "");
+  const reply = await send({
+    type: "registerServiceWorker",
+    tabId: state.tabId,
+    frameId: state.iframe.frameId,
+    scriptUrl,
+    scope
+  });
+  els.ifSwAddBtn.disabled = false;
+  if (reply && reply.ok) {
+    els.ifSwAddUrl.value = "";
+    els.ifSwAddScope.value = "";
+    setStatusEl(els.ifSwStatus, `Registered with scope ${reply.scope}.`, false);
+    await loadIframeServiceWorkers();
+  } else {
+    setStatusEl(els.ifSwStatus, (reply && reply.error) || "Registration failed.", true);
+  }
+}
+
+async function onUnregisterIframeServiceWorker(scope, btn) {
+  if (state.tabId == null) return;
+  btn.disabled = true;
+  setStatusEl(els.ifSwStatus, "");
+  const reply = await send({
+    type: "unregisterServiceWorker",
+    tabId: state.tabId,
+    frameId: state.iframe.frameId,
+    scope
+  });
+  if (reply && reply.ok) {
+    await loadIframeServiceWorkers();
+  } else {
+    btn.disabled = false;
+    setStatusEl(els.ifSwStatus, (reply && reply.error) || "Unregister failed.", true);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1280,6 +1722,9 @@ function wireEvents() {
         loadLogs();
         loadServiceWorkers();
       }
+      if (t.dataset.tab === "iframe") {
+        loadFrames();
+      }
     });
   }
   els.themeBtn.addEventListener("click", toggleTheme);
@@ -1294,7 +1739,7 @@ function wireEvents() {
     copyText(state.capturedCspText, els.copyBtn)
   );
   els.copyCurlBtn.addEventListener("click", () =>
-    copyText(buildCurlCommand(), els.copyCurlBtn)
+    copyText(buildCurlCommand(state.capturedUrl, state.capturedCspText), els.copyCurlBtn)
   );
   els.copyMetaBtn.addEventListener("click", () =>
     copyText(state.capturedMetaText, els.copyMetaBtn)
@@ -1308,19 +1753,49 @@ function wireEvents() {
 
   els.logsRefreshBtn.addEventListener("click", loadLogs);
   els.logsClearBtn.addEventListener("click", onClearLogsClick);
-  els.exportDebugBtn.addEventListener("click", onCopyDebugSummary);
-  els.exportOriginalCspBtn.addEventListener("click", onCopyOriginalCsp);
-  els.exportSuggestedCspBtn.addEventListener("click", onCopySuggestedCsp);
-  els.exportJsonBtn.addEventListener("click", onExportJson);
-  els.exportHarBtn.addEventListener("click", onExportHar);
-  els.exportCspLogsBtn.addEventListener("click", onExportCspLogs);
-  els.exportConsoleLogsBtn.addEventListener("click", onExportConsoleLogs);
+  els.exportDebugBtn.addEventListener("click", () => copyDebugSummary(state, els.exportDebugBtn));
+  els.exportOriginalCspBtn.addEventListener("click", () => copyOriginalCsp(state, els.exportOriginalCspBtn));
+  els.exportSuggestedCspBtn.addEventListener("click", () => copySuggestedCsp(state, els.exportSuggestedCspBtn));
+  els.exportJsonBtn.addEventListener("click", () => exportJson(state, els.exportJsonBtn, els.exportStatus));
+  els.exportHarBtn.addEventListener("click", () => exportHar(state, els.exportHarBtn, els.exportStatus));
+  els.exportCspLogsBtn.addEventListener("click", () => exportCspLogs(state, els.exportCspLogsBtn, els.exportStatus));
+  els.exportConsoleLogsBtn.addEventListener("click", () => exportConsoleLogs(state, els.exportConsoleLogsBtn, els.exportStatus));
 
   els.swRefreshBtn.addEventListener("click", loadServiceWorkers);
   els.swCopyBtn.addEventListener("click", () =>
     copyText(state.capturedSwText, els.swCopyBtn)
   );
   els.swAddBtn.addEventListener("click", onRegisterServiceWorker);
+
+  els.ifRefreshFramesBtn.addEventListener("click", loadFrames);
+  els.ifSelect.addEventListener("change", onFrameSelectChange);
+  els.ifStripBtn.addEventListener("click", onIframeStripClick);
+  els.ifInjectBtn.addEventListener("click", onIframeInjectClick);
+  els.ifApplyBtn.addEventListener("click", onIframeApplyClick);
+  els.ifResetBtn.addEventListener("click", onIframeResetClick);
+  els.ifCopyBtn.addEventListener("click", () =>
+    copyText(state.iframe.capturedCspText, els.ifCopyBtn)
+  );
+  els.ifCopyCurlBtn.addEventListener("click", () =>
+    copyText(buildCurlCommand(state.iframe.capturedUrl, state.iframe.capturedCspText), els.ifCopyCurlBtn)
+  );
+  els.ifCopyMetaBtn.addEventListener("click", () =>
+    copyText(state.iframe.capturedMetaText, els.ifCopyMetaBtn)
+  );
+  els.ifLogsRefreshBtn.addEventListener("click", loadIframeLogs);
+  els.ifLogsClearBtn.addEventListener("click", onIframeClearLogsClick);
+  els.ifSwRefreshBtn.addEventListener("click", loadIframeServiceWorkers);
+  els.ifSwCopyBtn.addEventListener("click", () =>
+    copyText(state.iframe.capturedSwText, els.ifSwCopyBtn)
+  );
+  els.ifSwAddBtn.addEventListener("click", onRegisterIframeServiceWorker);
+  els.ifExportDebugBtn.addEventListener("click", () => copyDebugSummary(state.iframe, els.ifExportDebugBtn));
+  els.ifExportOriginalCspBtn.addEventListener("click", () => copyOriginalCsp(state.iframe, els.ifExportOriginalCspBtn));
+  els.ifExportSuggestedCspBtn.addEventListener("click", () => copySuggestedCsp(state.iframe, els.ifExportSuggestedCspBtn));
+  els.ifExportJsonBtn.addEventListener("click", () => exportJson(state.iframe, els.ifExportJsonBtn, els.ifExportStatus));
+  els.ifExportHarBtn.addEventListener("click", () => exportHar(state.iframe, els.ifExportHarBtn, els.ifExportStatus));
+  els.ifExportCspLogsBtn.addEventListener("click", () => exportCspLogs(state.iframe, els.ifExportCspLogsBtn, els.ifExportStatus));
+  els.ifExportConsoleLogsBtn.addEventListener("click", () => exportConsoleLogs(state.iframe, els.ifExportConsoleLogsBtn, els.ifExportStatus));
 }
 
 async function init() {
