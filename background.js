@@ -186,6 +186,123 @@ async function syncRule(tabId, state) {
 }
 
 // ---------------------------------------------------------------------------
+// Per-iframe state (Iframe tab)
+//
+// Keyed by (tabId, iframe URL) rather than frameId: frameId is only valid
+// for the current page load and is reassigned on every reload, but the
+// point of this feature is a rule that keeps applying to "that iframe"
+// across the reload needed to make a header/meta change take effect. The
+// DNR rule below matches by exact URL instead, so it survives that.
+//
+// frameId is still used, live, for things that only make sense against
+// the frame as it exists right now: filtering captured logs to just this
+// frame, and targeting chrome.scripting.executeScript for meta/service-
+// worker reads (both take a frameId, not a URL).
+
+const frameState = new Map(); // `${tabId}::${url}` -> { strip, inject }
+const iframeRuleIdByKey = new Map(); // `${tabId}::${url}` -> ruleId
+const IFRAME_RULE_BASE = 500000;
+let nextIframeRuleSeq = 1;
+
+const frameConfigKey = (tabId, url) => `${tabId}::${url}`;
+
+function defaultFrameConfig() {
+  return { strip: false, inject: { enabled: false, value: "", mode: "header" } };
+}
+
+function getFrameConfig(tabId, url) {
+  return frameState.get(frameConfigKey(tabId, url)) || defaultFrameConfig();
+}
+
+function isFrameOn(cfg) {
+  return Boolean(cfg.strip || cfg.inject.enabled);
+}
+
+function ruleIdForIframe(tabId, url) {
+  const key = frameConfigKey(tabId, url);
+  if (!iframeRuleIdByKey.has(key)) {
+    iframeRuleIdByKey.set(key, IFRAME_RULE_BASE + nextIframeRuleSeq++);
+  }
+  return iframeRuleIdByKey.get(key);
+}
+
+// DNR's urlFilter has its own mini-syntax (*, ^, | are special) — escape
+// them, then anchor both ends with | so this matches that exact URL only.
+function exactUrlFilter(url) {
+  return "|" + url.replace(/[\\*^|]/g, (c) => "\\" + c) + "|";
+}
+
+function buildFrameRule(tabId, url, cfg) {
+  const headerInject =
+    cfg.inject.enabled &&
+    (cfg.inject.mode === "header" || cfg.inject.mode === "both") &&
+    cfg.inject.value;
+  if (!cfg.strip && !headerInject) return null;
+
+  const responseHeaders = [];
+  if (headerInject) {
+    responseHeaders.push({ header: "content-security-policy", operation: "set", value: cfg.inject.value });
+    responseHeaders.push({ header: "content-security-policy-report-only", operation: "remove" });
+    responseHeaders.push({ header: "x-webkit-csp", operation: "remove" });
+    responseHeaders.push({ header: "x-content-security-policy", operation: "remove" });
+  } else {
+    for (const h of CSP_HEADERS) {
+      responseHeaders.push({ header: h, operation: "remove" });
+    }
+  }
+
+  return {
+    id: ruleIdForIframe(tabId, url),
+    // Higher than the tab-wide rule (priority 1) so a per-iframe setting
+    // can override the tab-wide strip/inject for that one iframe's URL.
+    priority: 2,
+    action: { type: "modifyHeaders", responseHeaders },
+    condition: { urlFilter: exactUrlFilter(url), tabIds: [tabId], resourceTypes: ["sub_frame"] }
+  };
+}
+
+async function syncFrameRule(tabId, url, cfg) {
+  const ruleId = ruleIdForIframe(tabId, url);
+  const rule = buildFrameRule(tabId, url, cfg);
+  try {
+    await chrome.declarativeNetRequest.updateSessionRules({
+      removeRuleIds: [ruleId],
+      ...(rule ? { addRules: [rule] } : {})
+    });
+  } catch (e) {}
+}
+
+async function setFrameConfig(tabId, url, cfg) {
+  const key = frameConfigKey(tabId, url);
+  if (!isFrameOn(cfg) && !cfg.inject.value) {
+    frameState.delete(key);
+  } else {
+    frameState.set(key, cfg);
+  }
+  await syncFrameRule(tabId, url, cfg);
+}
+
+async function setFrameStrip(tabId, url, strip) {
+  await setFrameConfig(tabId, url, { ...getFrameConfig(tabId, url), strip });
+}
+
+async function setFrameInject(tabId, url, inject) {
+  const cur = getFrameConfig(tabId, url);
+  await setFrameConfig(tabId, url, { ...cur, inject: { ...cur.inject, ...inject } });
+}
+
+async function getFramesForTab(tabId) {
+  try {
+    const frames = await chrome.webNavigation.getAllFrames({ tabId });
+    return (frames || [])
+      .filter((f) => f.parentFrameId !== -1 && !f.errorOccurred && f.url)
+      .map((f) => ({ frameId: f.frameId, url: f.url, parentFrameId: f.parentFrameId }));
+  } catch (e) {
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Action / icon painting
 
 function buildPaintOps(on, target) {
@@ -304,9 +421,26 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
       logKey(tabId)
     ]);
   } catch (e) {}
+
+  const prefix = `${tabId}:`;
+  for (const key of Array.from(cspByFrame.keys())) {
+    if (key.startsWith(prefix)) cspByFrame.delete(key);
+  }
+  const framePrefix = `${tabId}::`;
+  const iframeRuleIdsToRemove = [];
+  for (const [key, ruleId] of iframeRuleIdByKey) {
+    if (key.startsWith(framePrefix)) {
+      iframeRuleIdsToRemove.push(ruleId);
+      iframeRuleIdByKey.delete(key);
+    }
+  }
+  for (const key of Array.from(frameState.keys())) {
+    if (key.startsWith(framePrefix)) frameState.delete(key);
+  }
+
   try {
     await chrome.declarativeNetRequest.updateSessionRules({
-      removeRuleIds: [ruleIdFor(tabId)]
+      removeRuleIds: [ruleIdFor(tabId), ...iframeRuleIdsToRemove]
     });
   } catch (e) {}
 });
@@ -316,35 +450,60 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 
 const cspByTab = new Map(); // tabId -> { url, headers, capturedAt }
 const metaByTab = new Map(); // tabId -> { url, metas, capturedAt }
+// Per-frame capture for the Iframe tab. In-memory only (not persisted to
+// storage.session) — frameId is only meaningful for the current page
+// load anyway, so there's nothing useful to rehydrate after a restart.
+const cspByFrame = new Map(); // `${tabId}:${frameId}` -> { url, headers, capturedAt, frameId }
 
 const cspKey = (tabId) => `csp_tab_${tabId}`;
 const metaKey = (tabId) => `meta_tab_${tabId}`;
+const frameKey = (tabId, frameId) => `${tabId}:${frameId}`;
 
 chrome.webRequest.onHeadersReceived.addListener(
   (details) => {
-    if (details.type !== "main_frame") return;
     if (typeof details.tabId !== "number" || details.tabId < 0) return;
+    if (details.type !== "main_frame" && details.type !== "sub_frame") return;
 
     const csp = (details.responseHeaders || [])
       .filter((h) => CSP_HEADERS.includes((h.name || "").toLowerCase()))
       .map((h) => ({ name: h.name, value: h.value }));
 
+    if (details.type === "main_frame") {
+      if (csp.length > 0) {
+        const record = { url: details.url, headers: csp, capturedAt: Date.now() };
+        cspByTab.set(details.tabId, record);
+        try {
+          chrome.storage.session.set({ [cspKey(details.tabId)]: record });
+        } catch (e) {}
+      } else {
+        cspByTab.delete(details.tabId);
+        try {
+          chrome.storage.session.remove(cspKey(details.tabId));
+        } catch (e) {}
+      }
+      return;
+    }
+
+    // sub_frame
+    const key = frameKey(details.tabId, details.frameId);
     if (csp.length > 0) {
-      const record = { url: details.url, headers: csp, capturedAt: Date.now() };
-      cspByTab.set(details.tabId, record);
-      try {
-        chrome.storage.session.set({ [cspKey(details.tabId)]: record });
-      } catch (e) {}
+      cspByFrame.set(key, {
+        url: details.url,
+        headers: csp,
+        capturedAt: Date.now(),
+        frameId: details.frameId
+      });
     } else {
-      cspByTab.delete(details.tabId);
-      try {
-        chrome.storage.session.remove(cspKey(details.tabId));
-      } catch (e) {}
+      cspByFrame.delete(key);
     }
   },
-  { urls: ["<all_urls>"], types: ["main_frame"] },
+  { urls: ["<all_urls>"], types: ["main_frame", "sub_frame"] },
   ["responseHeaders", "extraHeaders"]
 );
+
+function getCspForFrame(tabId, frameId) {
+  return cspByFrame.get(frameKey(tabId, frameId)) || null;
+}
 
 async function getCspForTab(tabId) {
   if (cspByTab.has(tabId)) return cspByTab.get(tabId);
@@ -360,11 +519,14 @@ async function getCspForTab(tabId) {
 }
 
 // On-demand: read CSP <meta> tags from the current document. Cached so
-// the popup doesn't have to wait on a script execute every time.
-async function captureMetaCsp(tabId) {
+// the popup doesn't have to wait on a script execute every time. Pass a
+// frameId to read a specific iframe instead of the tab's top frame — that
+// path is never cached, since frameId only makes sense for this load.
+async function captureMetaCsp(tabId, frameId) {
   try {
+    const target = typeof frameId === "number" ? { tabId, frameIds: [frameId] } : { tabId };
     const results = await chrome.scripting.executeScript({
-      target: { tabId },
+      target,
       func: () => {
         const re = /^(content-security-policy|content-security-policy-report-only|x-webkit-csp|x-content-security-policy)$/i;
         const out = [];
@@ -388,14 +550,17 @@ async function captureMetaCsp(tabId) {
         metas: result.metas,
         capturedAt: Date.now()
       };
-      metaByTab.set(tabId, record);
-      try {
-        await chrome.storage.session.set({ [metaKey(tabId)]: record });
-      } catch (e) {}
+      if (typeof frameId !== "number") {
+        metaByTab.set(tabId, record);
+        try {
+          await chrome.storage.session.set({ [metaKey(tabId)]: record });
+        } catch (e) {}
+      }
       return record;
     }
   } catch (e) {
-    // chrome:// pages, devtools, etc. — nothing to do.
+    // chrome:// pages, devtools, etc., or a sandboxed/opaque-origin iframe
+    // the extension can't inject into — nothing to do.
   }
   return null;
 }
@@ -420,10 +585,11 @@ async function getMetaForTab(tabId) {
 // navigator.serviceWorker is scoped to the page's origin, so this can't
 // be done from the extension's own background/popup pages.
 
-async function getServiceWorkersForTab(tabId) {
+async function getServiceWorkersForTab(tabId, frameId) {
   try {
+    const target = typeof frameId === "number" ? { tabId, frameIds: [frameId] } : { tabId };
     const results = await chrome.scripting.executeScript({
-      target: { tabId },
+      target,
       func: async () => {
         if (!("serviceWorker" in navigator)) {
           return { supported: false, url: location.href, registrations: [] };
@@ -461,10 +627,11 @@ async function getServiceWorkersForTab(tabId) {
   }
 }
 
-async function registerServiceWorkerInTab(tabId, scriptUrl, scope) {
+async function registerServiceWorkerInTab(tabId, scriptUrl, scope, frameId) {
   try {
+    const target = typeof frameId === "number" ? { tabId, frameIds: [frameId] } : { tabId };
     const results = await chrome.scripting.executeScript({
-      target: { tabId },
+      target,
       func: async (rawUrl, rawScope) => {
         if (!("serviceWorker" in navigator)) {
           return {
@@ -495,10 +662,11 @@ async function registerServiceWorkerInTab(tabId, scriptUrl, scope) {
   }
 }
 
-async function unregisterServiceWorkerInTab(tabId, scope) {
+async function unregisterServiceWorkerInTab(tabId, scope, frameId) {
   try {
+    const target = typeof frameId === "number" ? { tabId, frameIds: [frameId] } : { tabId };
     const results = await chrome.scripting.executeScript({
-      target: { tabId },
+      target,
       func: async (targetScope) => {
         if (!("serviceWorker" in navigator)) {
           return {
@@ -641,12 +809,16 @@ function toDataUrl(content, mime) {
 //   { type: "getLogs",     tabId }                        → { violations, console }
 //   { type: "clearLogs",   tabId }                        → { ok }
 //   { type: "downloadFile", filename, content, mime }     → { ok, downloadId }
-//   { type: "getServiceWorkers", tabId }                  → { supported, url, registrations }
-//   { type: "registerServiceWorker", tabId, scriptUrl, scope } → { ok, scope? , error? }
-//   { type: "unregisterServiceWorker", tabId, scope }     → { ok, error? }
+//   { type: "getServiceWorkers", tabId, frameId? }         → { supported, url, registrations }
+//   { type: "registerServiceWorker", tabId, scriptUrl, scope, frameId? } → { ok, scope? , error? }
+//   { type: "unregisterServiceWorker", tabId, scope, frameId? } → { ok, error? }
+//   { type: "getFrames",      tabId }                     → { frames: [{frameId,url,parentFrameId}] }
+//   { type: "getFrameInfo",   tabId, frameId, frameUrl }   → { csp, meta, strip, inject, on }
+//   { type: "setFrameStrip",  tabId, frameUrl, strip:bool }→ { ok }
+//   { type: "setFrameInject", tabId, frameUrl, inject:{enabled?,value?,mode?} } → { ok }
 //
 // Content script → background:
-//   { type: "getMetaInject" }              → { metaCsp: string | null }
+//   { type: "getMetaInject", frameUrl }    → { metaCsp: string | null }
 //   { type: "cspViolationLog", violation } → { ok }
 //   { type: "consoleLog", entry }          → { ok }
 
@@ -665,12 +837,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ metaCsp: null });
           return;
         }
-        const s = getState(tabId);
+        if (sender.frameId === 0) {
+          const s = getState(tabId);
+          const wantMeta =
+            s.inject.enabled &&
+            (s.inject.mode === "meta" || s.inject.mode === "both") &&
+            s.inject.value;
+          sendResponse({ metaCsp: wantMeta ? s.inject.value : null });
+          return;
+        }
+        // Sub-frame: only applies if this frame's URL matches an iframe
+        // the user has configured on the Iframe tab.
+        const url = msg.frameUrl || sender.url || "";
+        const cfg = getFrameConfig(tabId, url);
         const wantMeta =
-          s.inject.enabled &&
-          (s.inject.mode === "meta" || s.inject.mode === "both") &&
-          s.inject.value;
-        sendResponse({ metaCsp: wantMeta ? s.inject.value : null });
+          cfg.inject.enabled &&
+          (cfg.inject.mode === "meta" || cfg.inject.mode === "both") &&
+          cfg.inject.value;
+        sendResponse({ metaCsp: wantMeta ? cfg.inject.value : null });
         return;
       }
 
@@ -721,14 +905,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // These arrive from the content script and don't need a response.
       if (msg.type === "cspViolationLog") {
         const id = sender.tab && sender.tab.id;
-        if (typeof id === "number") addViolation(id, msg.violation || {});
+        if (typeof id === "number") {
+          addViolation(id, {
+            ...(msg.violation || {}),
+            frameId: sender.frameId,
+            frameUrl: sender.url
+          });
+        }
         sendResponse({ ok: true });
         return;
       }
 
       if (msg.type === "consoleLog") {
         const id = sender.tab && sender.tab.id;
-        if (typeof id === "number") addConsoleEntry(id, msg.entry || {});
+        if (typeof id === "number") {
+          addConsoleEntry(id, {
+            ...(msg.entry || {}),
+            frameId: sender.frameId,
+            frameUrl: sender.url
+          });
+        }
         sendResponse({ ok: true });
         return;
       }
@@ -776,19 +972,55 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
 
       if (msg.type === "getServiceWorkers") {
-        sendResponse(await getServiceWorkersForTab(tabId));
+        const frameId = typeof msg.frameId === "number" ? msg.frameId : undefined;
+        sendResponse(await getServiceWorkersForTab(tabId, frameId));
         return;
       }
 
       if (msg.type === "registerServiceWorker") {
+        const frameId = typeof msg.frameId === "number" ? msg.frameId : undefined;
         sendResponse(
-          await registerServiceWorkerInTab(tabId, msg.scriptUrl || "", msg.scope || "")
+          await registerServiceWorkerInTab(tabId, msg.scriptUrl || "", msg.scope || "", frameId)
         );
         return;
       }
 
       if (msg.type === "unregisterServiceWorker") {
-        sendResponse(await unregisterServiceWorkerInTab(tabId, msg.scope || ""));
+        const frameId = typeof msg.frameId === "number" ? msg.frameId : undefined;
+        sendResponse(await unregisterServiceWorkerInTab(tabId, msg.scope || "", frameId));
+        return;
+      }
+
+      if (msg.type === "getFrames") {
+        sendResponse({ frames: await getFramesForTab(tabId) });
+        return;
+      }
+
+      if (msg.type === "getFrameInfo") {
+        const frameId = msg.frameId;
+        const url = msg.frameUrl || "";
+        const meta = await captureMetaCsp(tabId, frameId);
+        const csp = typeof frameId === "number" ? getCspForFrame(tabId, frameId) : null;
+        const cfg = getFrameConfig(tabId, url);
+        sendResponse({
+          csp,
+          meta,
+          strip: cfg.strip,
+          inject: cfg.inject,
+          on: isFrameOn(cfg)
+        });
+        return;
+      }
+
+      if (msg.type === "setFrameStrip") {
+        await setFrameStrip(tabId, msg.frameUrl || "", Boolean(msg.strip));
+        sendResponse({ ok: true });
+        return;
+      }
+
+      if (msg.type === "setFrameInject") {
+        await setFrameInject(tabId, msg.frameUrl || "", msg.inject || {});
+        sendResponse({ ok: true });
         return;
       }
 
